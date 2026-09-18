@@ -1,0 +1,24 @@
+# Node modules & OS files
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+*.tmp
+server.log
+
+# IDE & editors
+.vscode/
+.idea/
+.zcode/
+
+# Local runtime data & user credentials (tránh leak tài khoản, mật khẩu, session lên GitHub)
+data/auth/
+data/history/
+data/private/
+data/active_rooms.json
+
+# Giữ lại kho đề mẫu công khai
+!data/public/
+!data/public/exams.json
