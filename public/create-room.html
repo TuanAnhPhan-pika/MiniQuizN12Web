@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Thiết lập phòng thi – Mini Quiz Classroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/home.css" />
   <link rel="stylesheet" href="css/create-room.css" />
@@ -88,7 +91,10 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">Đề thi</label>
+          <div class="label-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label class="form-label" style="margin-bottom:0;">Đề thi</label>
+            <span id="exam-assigned-badge" class="exam-assigned-badge" style="display:none;">✓ Đã gán sẵn đề thi</span>
+          </div>
           <div class="exam-select-container">
             <div class="custom-select-wrapper" id="custom-exam-wrapper">
               <div class="custom-select-trigger" id="custom-exam-trigger" onclick="toggleExamDropdown()">
@@ -333,8 +339,17 @@
   async function loadUserExams() {
     const urlParams = new URLSearchParams(window.location.search);
     const paramExamId = urlParams.get('examId');
-    if (paramExamId) {
-      selectedExamId = paramExamId;
+
+    // 1. Kiểm tra đề thi được gán từ sessionStorage (từ nút Tạo phòng thi ngay)
+    let assignedExam = null;
+    try {
+      const stored = sessionStorage.getItem('mqc_assigned_exam');
+      if (stored) assignedExam = JSON.parse(stored);
+    } catch (e) {}
+
+    const targetExamId = paramExamId || (assignedExam ? assignedExam.id : null);
+    if (targetExamId) {
+      selectedExamId = targetExamId;
     }
 
     try {
@@ -351,41 +366,48 @@
       } catch (err) {}
     }
 
-    // Nếu có examId từ URL mà chưa có trong danh sách, nạp từ localStorage
-    if (paramExamId && (!userExams || !userExams.some(e => e.id === paramExamId))) {
+    // Nếu có assignedExam từ sessionStorage, đảm bảo có mặt trong userExams
+    if (assignedExam) {
+      if (!userExams) userExams = [];
+      const exIdx = userExams.findIndex(e => e.id === assignedExam.id || (assignedExam.code && e.code === assignedExam.code));
+      if (exIdx >= 0) {
+        userExams[exIdx] = assignedExam;
+      } else {
+        userExams.unshift(assignedExam);
+      }
+      selectedExamId = assignedExam.id;
+    }
+
+    // Nếu có targetExamId mà chưa có trong danh sách, nạp từ localStorage
+    if (targetExamId && (!userExams || !userExams.some(e => e.id === targetExamId || e.code === targetExamId))) {
       try {
         const localExams = JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
-        const matchExam = localExams.find(e => e.id === paramExamId);
+        const matchExam = localExams.find(e => e.id === targetExamId || e.code === targetExamId);
         if (matchExam) {
           if (!userExams) userExams = [];
           userExams.unshift(matchExam);
+          selectedExamId = matchExam.id;
         }
       } catch (err) {}
     }
 
-    // Nếu kho cá nhân chưa có, lấy từ ngân hàng public làm gợi ý
-    if (!userExams || userExams.length === 0) {
+    // Nếu kho cá nhân chưa có hoặc chưa tìm thấy đề, lấy từ ngân hàng public
+    if (!userExams || userExams.length === 0 || (targetExamId && !userExams.some(e => e.id === targetExamId || e.code === targetExamId))) {
       try {
         const pRes = await fetch('/api/storage/public');
         if (pRes.ok) {
           const pData = await pRes.json();
           if (pData.success && Array.isArray(pData.exams)) {
-            userExams = pData.exams;
-          }
-        }
-      } catch (err) {}
-    }
-
-    // Nếu examId là từ ngân hàng public, kiểm tra tìm trong public
-    if (paramExamId && (!userExams || !userExams.some(e => e.id === paramExamId))) {
-      try {
-        const pRes = await fetch('/api/storage/public');
-        if (pRes.ok) {
-          const pData = await pRes.json();
-          const matchPub = (pData.exams || []).find(e => e.id === paramExamId || e.code === paramExamId);
-          if (matchPub) {
-            if (!userExams) userExams = [];
-            userExams.unshift(matchPub);
+            if (!userExams || userExams.length === 0) {
+              userExams = pData.exams;
+            }
+            if (targetExamId && !userExams.some(e => e.id === targetExamId || e.code === targetExamId)) {
+              const matchPub = pData.exams.find(e => e.id === targetExamId || e.code === targetExamId);
+              if (matchPub) {
+                userExams.unshift(matchPub);
+                selectedExamId = matchPub.id;
+              }
+            }
           }
         }
       } catch (err) {}
@@ -393,12 +415,26 @@
 
     renderCustomExamSelect();
 
-    // Tự động focus vào ô Tên phòng khi chuyển từ trang tạo đề sang
-    if (paramExamId) {
-      const nameInput = document.getElementById('room-name');
-      if (nameInput) {
-        nameInput.focus();
-        nameInput.select();
+    // Tự động gán đề thi: hiển thị badge, cập nhật gợi ý tên phòng và focus vào ô Tên phòng
+    if (targetExamId) {
+      const activeExam = userExams.find(e => e.id === selectedExamId || e.id === targetExamId || e.code === targetExamId) || userExams[0];
+      if (activeExam) {
+        selectedExamId = activeExam.id;
+        renderCustomExamSelect();
+
+        const badgeEl = document.getElementById('exam-assigned-badge');
+        if (badgeEl) {
+          badgeEl.style.display = 'inline-block';
+          badgeEl.textContent = '✓ Đã gán sẵn đề thi';
+        }
+
+        const nameInput = document.getElementById('room-name');
+        if (nameInput) {
+          nameInput.placeholder = 'Nhập tên phòng (VD: Phòng thi ' + activeExam.title + ')...';
+          nameInput.focus();
+        }
+
+        showRoomToast('🎯 Đã gán sẵn đề thi "' + activeExam.title + '". Nhập tên phòng và số lượng người tham gia để tạo phòng ngay!');
       }
     }
   }
@@ -908,7 +944,7 @@
     const nameInput = document.getElementById('room-name');
     const capacityInput = document.getElementById('room-capacity');
 
-    const roomName = nameInput.value.trim() || 'Phòng thi trực tuyến';
+    const roomName = nameInput.value.trim() || ('Phòng thi ' + chosenExam.title);
     const capacity = parseInt(capacityInput.value) || 40;
     const examId = document.getElementById('selected-exam-id')?.value || selectedExamId;
 
@@ -917,6 +953,9 @@
       alert('Vui lòng tạo hoặc chọn đề thi trước khi mở phòng!');
       return;
     }
+
+    // Xóa đề thi đã gán tạm khỏi sessionStorage sau khi tạo phòng thành công
+    sessionStorage.removeItem('mqc_assigned_exam');
 
     // Sinh mã PIN tự nhiên
     const pin = generateNaturalPin();
@@ -973,6 +1012,25 @@
 
     // Reset input tên phòng
     nameInput.value = '';
+    showRoomToast('🎉 Đã tạo phòng thi "' + roomName + '" thành công! Mã PIN: ' + pin);
+  }
+
+  /* ── Toast thông báo ── */
+  let roomToastTimer = null;
+  function showRoomToast(msg) {
+    let toast = document.getElementById('room-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'room-toast';
+      toast.className = 'room-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(roomToastTimer);
+    roomToastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, 4000);
   }
 
   /* ── Modal cảnh báo ── */
@@ -1016,6 +1074,8 @@
   // Quét cập nhật thời hạn phòng mỗi phút
   setInterval(loadCreatedRooms, 60 * 1000);
 </script>
+
+<div id="room-toast" class="room-toast"></div>
 
 </body>
 </html>

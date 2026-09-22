@@ -1,0 +1,29 @@
+﻿ĐỀ THI KIỂM TRA HỌC KỲ 1
+Môn: Tin học đại cương
+Thời gian: 15 phút
+
+Câu 1: RAM là viết tắt của cụm từ nào sau đây?
+A. Read Access Memory
+*B. Random Access Memory
+C. Run All Memory
+D. Real Action Mode
+
+Câu 2: Thiết bị nào sau đây là thiết bị xuất dữ liệu?
+A. Bàn phím
+B. Chuột
+C. Màn hình
+D. Máy quét
+Đáp án: C
+
+Câu 3: Bộ nhớ ROM là bộ nhớ gì?
+A. Bộ nhớ chỉ đọc
+B. Bộ nhớ truy xuất ngẫu nhiên
+C. Bộ nhớ flash
+D. Bộ nhớ đệm
+Đáp án: A
+
+Câu 4: Các lựa chọn có thể viết trên cùng một dòng:
+A. Lựa chọn 1   *B. Lựa chọn 2   C. Lựa chọn 3   D. Lựa chọn 4
+
+BẢNG ĐÁP ÁN:
+1-B  2-C  3-A  4-B

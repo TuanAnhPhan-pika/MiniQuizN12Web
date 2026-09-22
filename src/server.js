@@ -316,6 +316,11 @@ const MIME = {
   '.jpg':  'image/jpeg',
   '.svg':  'image/svg+xml',
   '.json': 'application/json;charset=utf-8',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls':  'application/vnd.ms-excel',
+  '.csv':  'text/csv;charset=utf-8',
+  '.txt':  'text/plain;charset=utf-8',
 };
 
 // Đọc JSON body từ request

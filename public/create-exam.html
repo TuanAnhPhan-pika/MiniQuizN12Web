@@ -4,8 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Soạn thảo & Quản lý đề thi – Mini Quiz Classroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/create-exam.css" />
+  <script src="js/mammoth.browser.min.js"></script>
+  <script src="js/xlsx.full.min.js"></script>
+  <script src="js/exam-importer.js"></script>
 </head>
 <body>
 
@@ -69,17 +75,25 @@
 <main class="exam-main">
   <div class="exam-container">
 
-    <!-- ── 3 OPTION TABS ── -->
+    <!-- ── 4 OPTION TABS ── -->
     <div class="options-nav">
-      <!-- Option 1: Tạo đề thi của riêng bạn -->
+      <!-- Option 1: Tạo đề thi thủ công -->
       <div class="option-tab active" id="tab-btn-create" onclick="switchTab('create')">
         <div class="option-tab-icon tab-icon-create">✎𓂃</div>
         <div class="option-tab-text">
-          <div class="option-tab-title">Tạo đề thi của riêng bạn</div>
+          <div class="option-tab-title">Tạo đề thi thủ công</div>
         </div>
       </div>
 
-      <!-- Option 2: Chọn đề thi từ ngân hàng -->
+      <!-- Option 2: Nhập đề từ file -->
+      <div class="option-tab" id="tab-btn-import" onclick="switchTab('import')">
+        <div class="option-tab-icon tab-icon-import">📥</div>
+        <div class="option-tab-text">
+          <div class="option-tab-title">Nhập đề từ file</div>
+        </div>
+      </div>
+
+      <!-- Option 3: Chọn đề thi từ ngân hàng -->
       <div class="option-tab" id="tab-btn-library" onclick="switchTab('library')">
         <div class="option-tab-icon tab-icon-library">🗐</div>
         <div class="option-tab-text">
@@ -87,7 +101,7 @@
         </div>
       </div>
 
-      <!-- Option 3: Chia sẻ đề thi của bạn -->
+      <!-- Option 4: Chia sẻ đề thi của bạn -->
       <div class="option-tab" id="tab-btn-share" onclick="switchTab('share')">
         <div class="option-tab-icon tab-icon-share">⫘</div>
         <div class="option-tab-text">
@@ -235,7 +249,132 @@
     </div>
 
     <!-- ════════════════════════════════════════════
-         TAB 2: CHỌN ĐỀ THI CÓ SẴN (LIBRARY)
+         TAB 2: NHẬP ĐỀ THI TỪ FILE (IMPORT)
+         ════════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-import">
+      <div class="import-card">
+        <div class="editor-card-header">
+          <div>
+            <div class="editor-card-title">📥 Nhập đề thi tự động từ tập tin</div>
+            <div class="import-subtitle">Tải lên file Word, Excel, CSV hoặc dán văn bản theo cấu trúc đề thi trắc nghiệm để tạo đề và mở phòng thi ngay lập tức</div>
+          </div>
+          <span class="page-badge">Nhập đề thông minh</span>
+        </div>
+
+        <!-- Sample files & supported formats notice -->
+        <div class="import-formats-bar">
+          <div class="import-formats-label">
+            <span class="format-pill">📄 Word (.docx)</span>
+            <span class="format-pill">📊 Excel (.xlsx, .xls)</span>
+            <span class="format-pill">📑 CSV</span>
+            <span class="format-pill">📝 Text (.txt) / Aiken</span>
+            <span class="format-pill">{ } JSON</span>
+          </div>
+          <div class="import-sample-links">
+            <span style="font-size: 0.85rem; color: var(--gray-text, #666); font-weight: 700;">Tải file mẫu:</span>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Word.docx" download="Mau_De_Thi_Word.docx" title="Tải file mẫu Word (.docx)">📄 Mẫu Word</a>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Mini_Quiz.xlsx" download="Mau_De_Thi_Mini_Quiz.xlsx" title="Tải file mẫu Excel (.xlsx)">📊 Mẫu Excel</a>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Aiken.txt" download="Mau_De_Thi_Aiken.txt" title="Tải file mẫu Text (.txt) / Aiken">📝 Mẫu Text/Aiken</a>
+          </div>
+        </div>
+
+        <!-- Toggle Input Mode: File Dropzone vs Direct Paste -->
+        <div class="import-mode-toggle">
+          <button type="button" class="btn-mode-toggle active" id="btn-mode-file" onclick="switchImportMode('file')">
+            📁 Tải lên tập tin (.docx, .xlsx, .csv, .txt, .json)
+          </button>
+          <button type="button" class="btn-mode-toggle" id="btn-mode-text" onclick="switchImportMode('text')">
+            📋 Dán văn bản trắc nghiệm trực tiếp
+          </button>
+        </div>
+
+        <!-- Mode 1: File Dropzone -->
+        <div id="import-mode-file-panel">
+          <div class="dropzone" id="exam-dropzone" onclick="document.getElementById('import-file-input').click()">
+            <input type="file" id="import-file-input" accept=".docx,.xlsx,.xls,.csv,.txt,.json" style="display:none;" onchange="handleImportFileInput(this.files)" />
+            <div class="dropzone-icon">📥</div>
+            <div class="dropzone-title">Kéo & thả file đề thi vào đây hoặc <span class="dropzone-browse">chọn từ máy tính</span></div>
+            <div class="dropzone-hint">
+              Hệ thống tự động nhận diện câu hỏi: <b>"Câu 1: ... A. B. C. D. Đáp án: A"</b>, hoặc bảng đáp án ở cuối đề (1-A 2-B), hoặc định dạng Moodle/Aiken, hoặc bảng tính Excel.
+            </div>
+          </div>
+        </div>
+
+        <!-- Mode 2: Direct Text Area -->
+        <div id="import-mode-text-panel" style="display:none;">
+          <div class="paste-text-wrap">
+            <textarea id="import-raw-text" class="import-textarea" rows="9" placeholder="Dán nội dung đề thi vào đây... Ví dụ:&#10;&#10;Câu 1: Thủ đô của Việt Nam là gì?&#10;A. Hà Nội&#10;B. TP. Hồ Chí Minh&#10;C. Đà Nẵng&#10;D. Hải Phòng&#10;Đáp án: A&#10;&#10;Câu 2: Đâu là ngôn ngữ lập trình chạy trên trình duyệt web?&#10;*A. JavaScript&#10;B. Pascal&#10;C. Fortran&#10;D. COBOL&#10;&#10;Câu 3: 1 byte bằng bao nhiêu bit?&#10;A. 4   B. 8   C. 16   D. 32&#10;Đáp án: B"></textarea>
+            <div class="paste-actions">
+              <button type="button" class="btn-parse-text" onclick="handleImportPastedText()">⚡ Trích xuất câu hỏi</button>
+              <button type="button" class="btn-clear-text" onclick="document.getElementById('import-raw-text').value=''">Xóa trắng</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Loading spinner -->
+        <div id="import-loading" class="import-loading" style="display:none;">
+          <div class="import-spinner"></div>
+          <div id="import-loading-text">Đang phân tích tập tin đề thi...</div>
+        </div>
+
+        <!-- Preview & Result Section (Hidden until questions parsed) -->
+        <div id="import-preview-section" style="display:none;" class="import-preview-section">
+          <div class="preview-section-header">
+            <div class="preview-section-title">
+              <span>📋 Kết quả nhận diện đề thi</span>
+              <span class="preview-badge-count" id="import-q-count-badge">0 câu hỏi</span>
+            </div>
+            <button type="button" class="btn-reimport" onclick="resetImportPreview()">↻ Chọn file khác</button>
+          </div>
+
+          <!-- Metadata configuration -->
+          <div class="import-meta-grid">
+            <div class="login-form-group">
+              <label class="login-form-label" for="import-exam-title">Tên đề thi *</label>
+              <input class="login-form-input" id="import-exam-title" type="text" placeholder="Nhập tên đề thi..." />
+            </div>
+            <div class="login-form-group">
+              <label class="login-form-label" for="import-exam-subject">Môn học</label>
+              <input class="login-form-input" id="import-exam-subject" type="text" placeholder="Ví dụ: Tin học, Tiếng Anh..." />
+            </div>
+            <div class="login-form-group">
+              <label class="login-form-label" for="import-exam-time">Thời gian / câu (giây)</label>
+              <input class="login-form-input" id="import-exam-time" type="number" min="5" max="300" value="15" />
+            </div>
+            <div class="login-form-group">
+              <label class="login-form-label" for="import-exam-points">Điểm mỗi câu</label>
+              <input class="login-form-input" id="import-exam-points" type="number" min="10" max="1000" step="10" value="100" />
+            </div>
+          </div>
+
+          <div style="font-size: 0.88rem; color: var(--gray-text, #666); margin-top: 4px;">
+            💡 <i>Kiểm tra lại câu hỏi bên dưới. Bạn có thể chỉnh sửa nội dung hoặc bấm vào lựa chọn để thay đổi đáp án đúng trước khi tạo phòng / lưu:</i>
+          </div>
+
+          <!-- Question list preview -->
+          <div class="import-questions-container" id="import-questions-list">
+            <!-- Dynamic question cards -->
+          </div>
+
+          <!-- 3 Instant Action Buttons -->
+          <div class="import-action-bar">
+            <button type="button" class="btn-import-action btn-import-launch" onclick="handleCreateRoomFromImported()" title="Tạo phòng thi và gán ngay đề này">
+              🚀 Tạo phòng thi ngay với đề này
+            </button>
+            <button type="button" class="btn-import-action btn-import-save" onclick="handleSaveImportedExam()" title="Lưu đề thi này vào kho cá nhân">
+              💾 Lưu vào kho đề cá nhân
+            </button>
+            <button type="button" class="btn-import-action btn-import-editor" onclick="handleApplyImportToEditor()" title="Chuyển dữ liệu sang trình soạn thảo để chỉnh sửa thêm">
+              ✏️ Nạp vào bảng soạn thảo thủ công
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         TAB 3: CHỌN ĐỀ THI CÓ SẴN (LIBRARY)
          ════════════════════════════════════════════ -->
     <div class="tab-content" id="tab-library">
       <!-- Search & Filter Bar theo môn học -->
@@ -307,7 +446,7 @@
       (function() {
         const hashTab = (location.hash || '').replace('#', '').trim();
         const savedTab = sessionStorage.getItem('mqc_active_exam_tab');
-        const validTabs = ['create', 'library', 'share'];
+        const validTabs = ['create', 'import', 'library', 'share'];
         const target = validTabs.includes(hashTab) ? hashTab : (validTabs.includes(savedTab) ? savedTab : 'create');
         if (target && target !== 'create') {
           document.querySelectorAll('.option-tab').forEach(b => b.classList.remove('active'));
@@ -519,7 +658,7 @@
     // 1. Kích hoạt ngay tab đang đứng lập tức (không đợi mạng)
     const hashTab = (location.hash || '').replace('#', '').trim();
     const savedTab = sessionStorage.getItem('mqc_active_exam_tab');
-    const validTabs = ['create', 'library', 'share'];
+    const validTabs = ['create', 'import', 'library', 'share'];
     const activeTab = validTabs.includes(hashTab) 
       ? hashTab 
       : (validTabs.includes(savedTab) ? savedTab : 'create');
@@ -528,10 +667,35 @@
       switchTab(activeTab, false);
     }
 
-    // 2. Khởi tạo form trắng mặc định (không trỏ vào đề nào)
+    // 2. Khởi tạo kéo thả cho Import dropzone
+    const dropzone = document.getElementById('exam-dropzone');
+    if (dropzone) {
+      ['dragenter', 'dragover'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.classList.add('dragover');
+        });
+      });
+      ['dragleave', 'drop'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.classList.remove('dragover');
+        });
+      });
+      dropzone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer ? e.dataTransfer.files : null;
+        if (files && files.length > 0) {
+          handleImportFileInput(files);
+        }
+      });
+    }
+
+    // 3. Khởi tạo form trắng mặc định (không trỏ vào đề nào)
     loadDraftOrInit();
 
-    // 3. Kiểm tra đăng nhập và đồng bộ dữ liệu ngầm
+    // 4. Kiểm tra đăng nhập và đồng bộ dữ liệu ngầm
     if (!(await checkAuthAndGetUser())) return;
     await syncPrivateStorageFromServer();
     renderSavedExamsList();
@@ -589,7 +753,7 @@
 
   /* ── TAB SWITCHING ── */
   function switchTab(tabName, updateStorage = true) {
-    const tabs = ['create', 'library', 'share'];
+    const tabs = ['create', 'import', 'library', 'share'];
     if (!tabs.includes(tabName)) tabName = 'create';
     tabs.forEach(t => {
       document.getElementById('tab-btn-' + t).classList.toggle('active', t === tabName);
@@ -825,11 +989,30 @@
         + '  </div>'
         + '</div>'
         + '<div class="saved-exam-actions">'
+        + '  <button class="btn-exam-action room" onclick="handleCreateRoomForExam(\'' + exam.id + '\', event)" title="Tạo phòng thi ngay với đề này">🚀 Tạo phòng</button>'
         + '  <button class="btn-exam-action edit" onclick="loadExamForEditing(\'' + exam.id + '\')" title="Chỉnh sửa đề thi này">✏️ Sửa</button>'
         + '  <button class="btn-exam-action delete" onclick="deleteExamFromEditor(\'' + exam.id + '\')" title="Xóa đề thi này">🗑️</button>'
         + '</div>'
         + '</div>';
     }).join('');
+  }
+
+  async function handleCreateRoomForExam(examId, event) {
+    if (event) event.stopPropagation();
+    const exams = getSavedExams();
+    const exam = exams.find(e => e.id === examId);
+    if (!exam) return;
+
+    if (!exam.questions || exam.questions.length === 0) {
+      showToast('⚠️ Đề thi này chưa có câu hỏi để tạo phòng!');
+      return;
+    }
+
+    sessionStorage.setItem('mqc_assigned_exam', JSON.stringify(exam));
+    try {
+      await saveExamToStorage(exam);
+    } catch(e) {}
+    window.location.href = 'create-room.html?examId=' + encodeURIComponent(exam.id);
   }
 
   function deleteExamFromEditor(examId) {
@@ -918,6 +1101,11 @@
     const exam = handleSaveExam(false);
     if (!exam) return;
 
+    // Lưu đề thi vào sessionStorage để trang create-room nạp tức thì
+    sessionStorage.setItem('mqc_assigned_exam', JSON.stringify(exam));
+
+    showToast('🚀 Đang chuyển sang giao diện tạo phòng thi...');
+
     try {
       await saveExamToStorage(exam);
     } catch (e) {}
@@ -935,7 +1123,265 @@
     }
   }
 
-  /* ── TAB 2: CHỌN ĐỀ TỪ NGÂN HÀNG (PUBLIC STORAGE) ── */
+  /* ════════════════════════════════════════════
+     TAB IMPORT: LOGIC XỬ LÝ NHẬP ĐỀ THI TỰ ĐỘNG
+     ════════════════════════════════════════════ */
+  let currentImportedQuestions = [];
+  let currentImportMode = 'file';
+
+  function switchImportMode(mode) {
+    currentImportMode = mode;
+    const btnFile = document.getElementById('btn-mode-file');
+    const btnText = document.getElementById('btn-mode-text');
+    const panelFile = document.getElementById('import-mode-file-panel');
+    const panelText = document.getElementById('import-mode-text-panel');
+    if (btnFile) btnFile.classList.toggle('active', mode === 'file');
+    if (btnText) btnText.classList.toggle('active', mode === 'text');
+    if (panelFile) panelFile.style.display = mode === 'file' ? 'block' : 'none';
+    if (panelText) panelText.style.display = mode === 'text' ? 'block' : 'none';
+  }
+
+  async function handleImportFileInput(files) {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    const loadingEl = document.getElementById('import-loading');
+    const loadingText = document.getElementById('import-loading-text');
+    if (loadingEl) {
+      loadingText.textContent = 'Đang phân tích tập tin "' + file.name + '"...';
+      loadingEl.style.display = 'flex';
+    }
+
+    try {
+      if (typeof ExamImporter === 'undefined') {
+        throw new Error('Mô-đun ExamImporter chưa được tải!');
+      }
+      const result = await ExamImporter.parseFile(file);
+      if (loadingEl) loadingEl.style.display = 'none';
+
+      if (result.error) {
+        showToast('❌ ' + result.error);
+        return;
+      }
+      if (!result.questions || result.questions.length === 0) {
+        showToast('⚠️ Không tìm thấy câu hỏi trắc nghiệm hợp lệ trong tập tin!');
+        return;
+      }
+
+      currentImportedQuestions = result.questions;
+      const titleInput = document.getElementById('import-exam-title');
+      const subjectInput = document.getElementById('import-exam-subject');
+      const defaultTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+      if (titleInput) titleInput.value = result.title || defaultTitle || ('Đề thi nhập ' + new Date().toLocaleDateString('vi-VN'));
+      if (subjectInput) subjectInput.value = result.subject || 'Tổng hợp';
+
+      renderImportPreview();
+      showToast('🎉 Đã nhận diện thành công ' + result.questions.length + ' câu hỏi!');
+    } catch (err) {
+      if (loadingEl) loadingEl.style.display = 'none';
+      console.error('Lỗi nhập file:', err);
+      showToast('❌ Lỗi khi đọc file: ' + (err.message || 'Không thể xử lý'));
+    }
+  }
+
+  async function handleImportPastedText() {
+    const rawText = document.getElementById('import-raw-text')?.value || '';
+    if (!rawText.trim()) {
+      showToast('⚠️ Vui lòng dán nội dung đề thi vào khung văn bản!');
+      return;
+    }
+
+    const loadingEl = document.getElementById('import-loading');
+    const loadingText = document.getElementById('import-loading-text');
+    if (loadingEl) {
+      loadingText.textContent = 'Đang phân tích cú pháp câu hỏi trắc nghiệm...';
+      loadingEl.style.display = 'flex';
+    }
+
+    try {
+      const result = ExamImporter.parseVnText(rawText);
+      if (loadingEl) loadingEl.style.display = 'none';
+
+      if (!result.questions || result.questions.length === 0) {
+        showToast('⚠️ Không nhận diện được câu hỏi trắc nghiệm nào từ văn bản!');
+        return;
+      }
+
+      currentImportedQuestions = result.questions;
+      const titleInput = document.getElementById('import-exam-title');
+      const subjectInput = document.getElementById('import-exam-subject');
+      if (titleInput) titleInput.value = result.title || ('Đề trắc nghiệm ' + new Date().toLocaleDateString('vi-VN'));
+      if (subjectInput) subjectInput.value = result.subject || 'Tổng hợp';
+
+      renderImportPreview();
+      showToast('🎉 Đã nhận diện thành công ' + result.questions.length + ' câu hỏi!');
+    } catch (err) {
+      if (loadingEl) loadingEl.style.display = 'none';
+      showToast('❌ Lỗi phân tích văn bản: ' + (err.message || 'Không rõ lỗi'));
+    }
+  }
+
+  function renderImportPreview() {
+    const container = document.getElementById('import-questions-list');
+    const badge = document.getElementById('import-q-count-badge');
+    const section = document.getElementById('import-preview-section');
+    if (!container || !section) return;
+
+    if (!currentImportedQuestions || currentImportedQuestions.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'flex';
+    if (badge) badge.textContent = currentImportedQuestions.length + ' câu hỏi';
+
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+
+    container.innerHTML = currentImportedQuestions.map((q, qIdx) => {
+      const choicesHtml = (q.choices || []).map((ch, cIdx) => {
+        const isCorrect = (cIdx === q.correct);
+        const letter = letters[cIdx] || String(cIdx + 1);
+        return '<button type="button" class="import-choice-btn ' + (isCorrect ? 'correct' : '') + '" onclick="setImportQuestionCorrect(' + qIdx + ', ' + cIdx + ')" title="Bấm để chọn đáp án này là đúng">'
+          + '<span class="import-choice-tag">' + letter + '.</span>'
+          + '<span class="import-choice-val">' + escapeHtml(ch) + '</span>'
+          + (isCorrect ? '<span class="import-choice-check">✓ Đúng</span>' : '')
+          + '</button>';
+      }).join('');
+
+      return '<div class="import-q-card" id="import-q-' + qIdx + '">'
+        + '<div class="import-q-header">'
+        + '  <span class="import-q-number">Câu ' + (qIdx + 1) + ':</span>'
+        + '  <button type="button" class="btn-import-q-delete" onclick="deleteImportQuestion(' + qIdx + ')" title="Xóa câu hỏi này">🗑️</button>'
+        + '</div>'
+        + '<input type="text" class="import-q-text-input" value="' + escapeHtml(q.text) + '" onchange="updateImportQuestionText(' + qIdx + ', this.value)" placeholder="Nội dung câu hỏi..." />'
+        + '<div class="import-choices-grid">'
+        + choicesHtml
+        + '</div>'
+        + '</div>';
+    }).join('');
+
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function updateImportQuestionText(qIdx, val) {
+    if (currentImportedQuestions[qIdx]) {
+      currentImportedQuestions[qIdx].text = val.trim();
+    }
+  }
+
+  function setImportQuestionCorrect(qIdx, cIdx) {
+    if (currentImportedQuestions[qIdx]) {
+      currentImportedQuestions[qIdx].correct = cIdx;
+      renderImportPreview();
+    }
+  }
+
+  function deleteImportQuestion(qIdx) {
+    if (qIdx >= 0 && qIdx < currentImportedQuestions.length) {
+      currentImportedQuestions.splice(qIdx, 1);
+      renderImportPreview();
+      showToast('🗑️ Đã xóa câu hỏi!');
+    }
+  }
+
+  function resetImportPreview() {
+    currentImportedQuestions = [];
+    const section = document.getElementById('import-preview-section');
+    if (section) section.style.display = 'none';
+    const fileInput = document.getElementById('import-file-input');
+    if (fileInput) fileInput.value = '';
+    const rawText = document.getElementById('import-raw-text');
+    if (rawText) rawText.value = '';
+  }
+
+  function buildImportedExamObject() {
+    const title = (document.getElementById('import-exam-title')?.value || '').trim();
+    if (!title) {
+      showToast('⚠️ Vui lòng nhập tên đề thi!');
+      document.getElementById('import-exam-title')?.focus();
+      return null;
+    }
+    if (!currentImportedQuestions || currentImportedQuestions.length === 0) {
+      showToast('⚠️ Đề thi cần có ít nhất 1 câu hỏi!');
+      return null;
+    }
+
+    for (let i = 0; i < currentImportedQuestions.length; i++) {
+      const q = currentImportedQuestions[i];
+      if (!q.text || !q.text.trim()) {
+        showToast('⚠️ Câu ' + (i + 1) + ' chưa có nội dung câu hỏi!');
+        return null;
+      }
+      if (!q.choices || q.choices.length < 2) {
+        showToast('⚠️ Câu ' + (i + 1) + ' cần có ít nhất 2 đáp án!');
+        return null;
+      }
+      if (typeof q.correct !== 'number' || q.correct < 0 || q.correct >= q.choices.length) {
+        showToast('⚠️ Câu ' + (i + 1) + ' chưa có đáp án đúng được chọn!');
+        return null;
+      }
+    }
+
+    const subject = (document.getElementById('import-exam-subject')?.value || '').trim() || 'Tổng hợp';
+    const timePerQ = parseInt(document.getElementById('import-exam-time')?.value) || 15;
+    const pointsPerQ = parseInt(document.getElementById('import-exam-points')?.value) || 100;
+
+    return {
+      id: 'exam-' + Date.now(),
+      code: generateExamCode(),
+      title: title,
+      subject: subject,
+      timePerQ: timePerQ,
+      pointsPerQ: pointsPerQ,
+      questions: JSON.parse(JSON.stringify(currentImportedQuestions)),
+      createdAt: new Date().toLocaleDateString('vi-VN')
+    };
+  }
+
+  async function handleCreateRoomFromImported() {
+    const exam = buildImportedExamObject();
+    if (!exam) return;
+
+    sessionStorage.setItem('mqc_assigned_exam', JSON.stringify(exam));
+    showToast('🚀 Đang chuyển sang giao diện tạo phòng thi...');
+    try {
+      await saveExamToStorage(exam);
+    } catch (e) {}
+    window.location.href = 'create-room.html?examId=' + encodeURIComponent(exam.id);
+  }
+
+  async function handleSaveImportedExam() {
+    const exam = buildImportedExamObject();
+    if (!exam) return;
+
+    try {
+      await saveExamToStorage(exam);
+      renderSavedExamsList();
+      renderShareTab();
+      showToast('✅ Đã lưu đề "' + exam.title + '" vào kho cá nhân!');
+    } catch (err) {
+      showToast('⚠️ Lỗi khi lưu đề thi!');
+    }
+  }
+
+  function handleApplyImportToEditor() {
+    const exam = buildImportedExamObject();
+    if (!exam) return;
+
+    currentEditingExamId = null;
+    currentQuestions = JSON.parse(JSON.stringify(exam.questions));
+    document.getElementById('exam-title').value = exam.title;
+    document.getElementById('exam-subject').value = exam.subject;
+    document.getElementById('exam-time').value = exam.timePerQ;
+    document.getElementById('exam-points').value = exam.pointsPerQ;
+    cancelEditQuestion();
+    renderQuestionsList();
+    renderSavedExamsList();
+
+    switchTab('create');
+    showToast('✏️ Đã nạp ' + currentQuestions.length + ' câu hỏi vào bảng soạn thảo thủ công!');
+  }
+
+  /* ── TAB 3: CHỌN ĐỀ TỪ NGÂN HÀNG (PUBLIC STORAGE) ── */
   let currentLibPage = 1;
   let currentLibSubjectFilter = '';
   const LIB_PAGE_SIZE = 9;
@@ -1255,10 +1701,12 @@
     let actionsHtml = '';
     if (isInPrivate) {
       actionsHtml = `
+        <button class="btn-lib-room" onclick="handleCreateRoomForExam('${exam.id}', event)" style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color:#fff; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer;">🚀 Tạo phòng thi ngay</button>
         <button class="btn-lib-edit" onclick="loadExamForEditing('${exam.id}'); switchTab('create'); closeQuickViewModal();">✏️ Chỉnh sửa đề này</button>
       `;
     } else {
       actionsHtml = `
+        <button class="btn-lib-room" onclick="handleCreateRoomFromPublic('${exam.id}')" style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color:#fff; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer;">🚀 Tạo phòng thi ngay</button>
         <button class="btn-lib-save" onclick="savePublicExamToPrivate('${exam.id}'); closeQuickViewModal();">💾 Lưu vào đề cá nhân</button>
         <button class="btn-lib-edit" onclick="saveAndEditPublicExam('${exam.id}')">✏️ Lưu và chỉnh sửa ngay</button>
       `;
@@ -1266,6 +1714,23 @@
     document.getElementById('qv-modal-actions').innerHTML = actionsHtml;
 
     document.getElementById('quickview-modal').classList.add('show');
+  }
+
+  async function handleCreateRoomFromPublic(examId) {
+    const pub = (publicExamsCache || []).find(e => e.id === examId || e.code === examId) || FALLBACK_PUBLIC_EXAMS.find(e => e.id === examId);
+    if (!pub) return;
+    const cloned = JSON.parse(JSON.stringify(pub));
+    cloned.id = 'exam-' + Date.now();
+    cloned.code = generateExamCode();
+    delete cloned.author;
+    cloned.sourceParentId = pub.id;
+    cloned.createdAt = new Date().toLocaleDateString('vi-VN');
+    
+    sessionStorage.setItem('mqc_assigned_exam', JSON.stringify(cloned));
+    try {
+      await saveExamToStorage(cloned);
+    } catch(e) {}
+    window.location.href = 'create-room.html?examId=' + encodeURIComponent(cloned.id);
   }
 
   function closeQuickViewModal() {
@@ -1598,7 +2063,7 @@
     return maxLen > 0 ? (dist / maxLen) * 100 : 0;
   }
 
-  function saveExamToStorage(exam) {
+  async function saveExamToStorage(exam) {
     if (!exam.code) exam.code = generateExamCode();
     delete exam.pin;
 
@@ -1612,12 +2077,18 @@
     localStorage.setItem('mqc_custom_exams', JSON.stringify(exams));
 
     // Gọi API lưu lên server Private Storage
-    fetch('/api/storage/private', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ exam })
-    }).catch(err => console.warn('Lỗi lưu server:', err));
+    try {
+      const res = await fetch('/api/storage/private', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ exam })
+      });
+      return await res.json();
+    } catch (err) {
+      console.warn('Lỗi lưu server:', err);
+      return null;
+    }
   }
 
   function generateExamCode() {

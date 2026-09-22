@@ -1,0 +1,29 @@
+﻿ĐỀ THI MẪU CHUẨN AIKEN - MINI QUIZ CLASSROOM
+
+Câu 1: Thủ đô của Việt Nam là thành phố nào?
+A. Đà Nẵng
+B. Hà Nội
+C. TP. Hồ Chí Minh
+D. Hải Phòng
+ANSWER: B
+
+Câu 2: Kết quả của phép tính: 15 x 4 + 10 là bao nhiêu?
+A. 60
+B. 70
+C. 50
+D. 80
+ANSWER: B
+
+Câu 3: Đâu là ngôn ngữ lập trình chạy trên trình duyệt web?
+A. JavaScript
+B. Python
+C. Pascal
+D. C++
+ANSWER: A
+
+Câu 4: 1 byte bằng bao nhiêu bit?
+A. 4
+B. 8
+C. 16
+D. 32
+ANSWER: B

@@ -22,3 +22,9 @@ data/active_rooms.json
 # Giữ lại kho đề mẫu công khai
 !data/public/
 !data/public/exams.json
+
+# Test & scratch
+scratch/
+cookies.txt
+*.ps1
+
