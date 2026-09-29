@@ -1,0 +1,11 @@
+.git
+.gitignore
+.zcode
+node_modules
+*.log
+*.tmp
+server.log
+data/auth/
+data/history/
+data/private/
+data/active_rooms.json

@@ -1,0 +1,35 @@
+{
+  "name": "mini-quiz-classroom",
+  "version": "1.0.0",
+  "description": "Mini Quiz Classroom - Nen tang thi trac nghiem truc tuyen thoi gian thuc",
+  "main": "server.js",
+  "scripts": {
+    "build": "echo 'Build complete'",
+    "start": "node server.js",
+    "dev": "node server.js",
+    "lint": "node --check server.js src/server.js src/auth.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "quiz",
+    "classroom",
+    "realtime",
+    "education"
+  ],
+  "author": "Mini Quiz Classroom Team",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "@types/pg": "^8.23.1",
+    "dotenv": "^18.0.4",
+    "drizzle-kit": "^0.31.11",
+    "drizzle-orm": "^0.45.3",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^14.5.0",
+    "pg": "^8.23.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

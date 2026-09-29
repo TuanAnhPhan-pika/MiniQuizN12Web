@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bảng điều khiển – Mini Quiz Classroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/home.css" />
+  <link rel="stylesheet" href="css/dashboard.css" />
+  <link rel="stylesheet" href="css/host-monitor.css" />
+</head>
+<body>
+
+<!-- ── SKY / CLOUDS ── -->
+<div class="sky">
+  <div class="cloud cloud-1"><svg width="260" height="80" viewBox="0 0 260 80" fill="none"><ellipse cx="130" cy="56" rx="120" ry="28" fill="white"/><ellipse cx="90" cy="42" rx="60" ry="34" fill="white"/><ellipse cx="160" cy="38" rx="52" ry="30" fill="white"/><ellipse cx="220" cy="52" rx="36" ry="22" fill="white"/><ellipse cx="40" cy="52" rx="34" ry="22" fill="white"/></svg></div>
+  <div class="cloud cloud-2"><svg width="180" height="60" viewBox="0 0 180 60" fill="none"><ellipse cx="90" cy="42" rx="82" ry="20" fill="white"/><ellipse cx="60" cy="30" rx="44" ry="26" fill="white"/><ellipse cx="120" cy="28" rx="38" ry="22" fill="white"/><ellipse cx="155" cy="38" rx="24" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-3"><svg width="140" height="50" viewBox="0 0 140 50" fill="none"><ellipse cx="70" cy="36" rx="62" ry="16" fill="white"/><ellipse cx="46" cy="26" rx="34" ry="22" fill="white"/><ellipse cx="96" cy="24" rx="30" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-4"><svg width="300" height="64" viewBox="0 0 300 64" fill="none"><ellipse cx="150" cy="48" rx="138" ry="18" fill="white"/><ellipse cx="100" cy="34" rx="62" ry="28" fill="white"/><ellipse cx="200" cy="30" rx="56" ry="26" fill="white"/><ellipse cx="260" cy="44" rx="36" ry="18" fill="white"/><ellipse cx="46" cy="44" rx="40" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-5"><svg width="100" height="40" viewBox="0 0 100 40" fill="none"><ellipse cx="50" cy="28" rx="44" ry="14" fill="white"/><ellipse cx="34" cy="20" rx="24" ry="18" fill="white"/><ellipse cx="68" cy="18" rx="22" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-6"><svg width="220" height="70" viewBox="0 0 220 70" fill="none"><ellipse cx="110" cy="52" rx="100" ry="20" fill="white"/><ellipse cx="72" cy="36" rx="52" ry="30" fill="white"/><ellipse cx="148" cy="32" rx="46" ry="28" fill="white"/><ellipse cx="192" cy="48" rx="28" ry="18" fill="white"/></svg></div>
+</div>
+
+<!-- Sun / Moon -->
+<div class="sky-body">
+  <div class="sun-wrap">
+    <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#FFD700" stroke-width="3.5" stroke-linecap="round">
+        <line x1="40" y1="2"  x2="40" y2="19"/>
+        <line x1="40" y1="61" x2="40" y2="78"/>
+        <line x1="2"  y1="40" x2="19" y2="40"/>
+        <line x1="61" y1="40" x2="78" y2="40"/>
+        <line x1="13.1" y1="13.1" x2="24.9" y2="24.9"/>
+        <line x1="55.1" y1="55.1" x2="66.9" y2="66.9"/>
+        <line x1="66.9" y1="13.1" x2="55.1" y2="24.9"/>
+        <line x1="24.9" y1="55.1" x2="13.1" y2="66.9"/>
+      </g>
+    </svg>
+  </div>
+  <div class="sun"></div>
+  <div class="moon"></div>
+</div>
+
+<!-- Stars (dark mode) -->
+<div class="stars" id="stars"></div>
+
+<!-- ── HEADER ── -->
+<header>
+  <a href="dashboard.html" class="app-title" id="app-title" title="Về Bảng điều khiển"></a>
+  <div class="header-right">
+    <button class="btn-dark" id="btn-dark" title="Chuyển chế độ tối/sáng">
+      <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="2"  x2="12" y2="5"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2"  y1="12" x2="5"  y2="12"/>
+        <line x1="19" y1="12" x2="22" y2="12"/>
+        <line x1="4.2" y1="4.2"  x2="6.3" y2="6.3"/>
+        <line x1="17.7" y1="17.7" x2="19.8" y2="19.8"/>
+        <line x1="19.8" y1="4.2"  x2="17.7" y2="6.3"/>
+        <line x1="6.3"  y1="17.7" x2="4.2"  y2="19.8"/>
+      </svg>
+      <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+
+    <!-- User Profile Badge -->
+    <button class="user-chip" id="user-chip" onclick="openSettingsModal()" style="cursor:pointer; border:none;">
+      <div class="user-chip-avatar">👨‍🏫</div>
+      <span id="user-chip-label">Đang tải...</span>
+    </button>
+
+    <!-- Logout button -->
+    <a class="btn-logout" href="#" onclick="handleLogout(event)">Đăng xuất</a>
+  </div>
+</header>
+
+<!-- Settings Modal: đổi tên hiển thị / mật khẩu -->
+<div class="modal-overlay" id="settings-modal" onclick="if(event.target.id==='settings-modal') closeSettingsModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div class="modal-title">⚙️ Cài đặt tài khoản</div>
+      <button class="btn-close-modal" onclick="closeSettingsModal()">✕</button>
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="settings-current-pass">Mật khẩu hiện tại (bắt buộc)</label>
+      <input class="login-form-input" id="settings-current-pass" type="password" autocomplete="current-password" />
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="settings-name">Tên hiển thị mới</label>
+      <input class="login-form-input" id="settings-name" type="text" placeholder="Để trống nếu không đổi" autocomplete="off" />
+      <div class="login-hint">Giới hạn 1 lần / 7 ngày</div>
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="settings-new-pass">Mật khẩu mới</label>
+      <input class="login-form-input" id="settings-new-pass" type="password" placeholder="Để trống nếu không đổi" autocomplete="new-password" />
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="settings-confirm-pass">Xác nhận mật khẩu mới</label>
+      <input class="login-form-input" id="settings-confirm-pass" type="password" autocomplete="new-password" />
+      <div class="login-hint">Giới hạn 1 lần / 7 ngày</div>
+    </div>
+    <div class="error-msg" id="settings-msg"></div>
+    <button class="btn-join" onclick="handleSaveSettings()">Lưu thay đổi</button>
+  </div>
+</div>
+
+<!-- Modal Chi tiết bài thi đã làm trong Lịch sử -->
+<div class="modal-overlay" id="history-modal" onclick="if(event.target.id==='history-modal') closeHistoryDetails()">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <div class="modal-title" id="hist-modal-title">Chi tiết bài làm</div>
+      <button class="btn-close-modal" onclick="closeHistoryDetails()">✕</button>
+    </div>
+    <div id="hist-modal-meta" style="font-size: 0.85rem; color: var(--gray-text); padding-bottom: 6px; border-bottom: 1.5px solid var(--blue-border);"></div>
+    <div class="history-details-scroll" id="hist-details-list"></div>
+  </div>
+</div>
+
+<!-- Modal Báo cáo thống kê chi tiết phòng thi đã tổ chức -->
+<div class="modal-overlay" id="hosted-stats-modal" onclick="if(event.target.id==='hosted-stats-modal') closeHostedStatsModal()">
+  <div class="modal-card modal-card-wide hosted-modal-card" style="max-width: 1080px; width: 95%; max-height: 90vh; overflow-y: auto; padding: 28px 32px;">
+    <div class="modal-header" style="border-bottom: 2px dashed var(--blue-border); padding-bottom: 14px; margin-bottom: 20px;">
+      <div>
+        <div class="modal-title" id="d-modal-title" style="font-size: 1.6rem; font-weight: 900; color: #0f172a;">Báo Cáo Thống Kê Phòng Thi</div>
+        <div id="d-modal-meta" style="font-size: 0.95rem; color: var(--gray-text); margin-top: 4px; font-weight: 600;"></div>
+      </div>
+      <button class="btn-close-modal" onclick="closeHostedStatsModal()">✕</button>
+    </div>
+
+    <!-- 3 Thẻ số liệu tổng quan -->
+    <div class="stats-summary-cards" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px;">
+      <div class="stat-metric-card" style="background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border: 2px solid #0284c7; border-radius: 16px; padding: 16px; text-align: center;">
+        <div style="font-size: 0.85rem; font-weight: 800; text-transform: uppercase; color: #0369a1;">👥 Số thí sinh tham gia</div>
+        <div id="d-stat-candidates" style="font-size: 2rem; font-weight: 900; color: #0f172a; margin-top: 4px; font-family: Consolas, monospace;">0 / 40</div>
+      </div>
+      <div class="stat-metric-card" style="background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border: 2px solid #0284c7; border-radius: 16px; padding: 16px; text-align: center;">
+        <div style="font-size: 0.85rem; font-weight: 800; text-transform: uppercase; color: #0369a1;">📊 Điểm trung bình</div>
+        <div id="d-stat-avg-score" style="font-size: 2rem; font-weight: 900; color: #0f172a; margin-top: 4px; font-family: Consolas, monospace;">0 / 0</div>
+      </div>
+      <div class="stat-metric-card" style="background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border: 2px solid #0284c7; border-radius: 16px; padding: 16px; text-align: center;">
+        <div style="font-size: 0.85rem; font-weight: 800; text-transform: uppercase; color: #0369a1;">🏆 Điểm cao nhất</div>
+        <div id="d-stat-max-score" style="font-size: 2rem; font-weight: 900; color: #0f172a; margin-top: 4px; font-family: Consolas, monospace;">0 / 0</div>
+      </div>
+    </div>
+
+    <!-- BẢNG 1: DANH SÁCH DẠNG KÉO THEO CÂU HỎI (KÉO KHI > 5 CÂU) -->
+    <div class="stats-section-block" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px;">
+      <div class="stats-section-title" style="font-size: 1.25rem; font-weight: 850; color: #0f172a;">📋 Thống kê tỷ lệ theo từng câu hỏi</div>
+      <div class="table-scroll-vertical" style="max-height: 295px; overflow-y: auto; border: 2px solid #cbd5e1; border-radius: 14px;">
+        <table class="stats-table" style="width: 100%; border-collapse: collapse;">
+          <thead>
+            <tr>
+              <th style="width: 45%;">Câu hỏi</th>
+              <th style="width: 25%;">Đáp án đúng</th>
+              <th style="width: 15%; text-align: center;">Số người đúng (m/n)</th>
+              <th style="width: 15%; text-align: center;">Tỉ lệ đúng (%)</th>
+            </tr>
+          </thead>
+          <tbody id="d-questions-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- BẢNG 2: MA TRẬN KẾT QUẢ CHI TIẾT TỪNG THÍ SINH (KÉO DỌC KHI > 10 THÍ SINH, KÉO NGANG KHI > 4 CÂU HỎI) -->
+    <div class="stats-section-block" style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="stats-section-title" style="font-size: 1.25rem; font-weight: 850; color: #0f172a;">
+        <span>👥 Ma trận kết quả chi tiết từng thí sinh</span>
+        <span style="font-size: 0.88rem; font-weight: 600; color: #64748b; margin-left: 8px;">(🟢 Đúng • 🔴 Sai / Bỏ qua)</span>
+      </div>
+      <div class="table-scroll-2d" style="max-height: 540px; overflow-x: auto; overflow-y: auto; border: 2px solid #cbd5e1; border-radius: 14px;">
+        <table class="matrix-table" id="d-matrix-table" style="width: 100%; border-collapse: separate; border-spacing: 0;">
+          <thead>
+            <tr id="d-matrix-thead-tr">
+              <th class="sticky-col-player">Người chơi</th>
+              <!-- Cột câu hỏi 1, 2, 3... -->
+              <th class="sticky-col-score">Số điểm đạt được</th>
+              <th class="sticky-col-ratio">Tỉ lệ (%)</th>
+            </tr>
+          </thead>
+          <tbody id="d-matrix-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── MAIN DASHBOARD ── -->
+<main class="dashboard-main">
+  <!-- Màn hình chính Dashboard 4 ô -->
+  <div class="dashboard-container" id="dash-view-main">
+
+    <!-- Cột tiêu đề hàng trên -->
+    <div class="dash-grid-title-left col-heading">Phòng thi và đề thi</div>
+    <div class="dash-grid-title-right col-heading">Tham gia phòng thi</div>
+
+    <!-- HÀNG 1 - CỘT TRÁI: Tạo đề thi mới -->
+    <div class="action-card dash-row-1-left">
+      <div class="action-card-header">
+        <div class="action-card-icon icon-exam"> 🗁 </div>
+        <div class="action-card-titles">
+          <span class="action-card-badge">Ngân hàng câu hỏi</span>
+          <h2 class="action-card-title">Tạo đề thi mới</h2>
+        </div>
+      </div>
+      <p class="action-card-desc">
+        Tạo, chỉnh sửa và quản lý bộ đề thi của riêng bạn
+      </p>
+      <div class="action-features">
+        <span class="feature-tag"> ⌯⌲ Thêm câu hỏi nhanh</span>
+        <span class="feature-tag"> ⏱ Tùy chỉnh thời gian</span>
+        <span class="feature-tag"> 🕮 Quản lý đề thi</span>
+      </div>
+      <button class="btn-action btn-action-exam" onclick="handleCreateExam()">✎﹏ Bắt đầu tạo đề thi </button>
+    </div>
+
+    <!-- HÀNG 1 - CỘT PHẢI: Hộp Nhập mã PIN -->
+    <div class="dash-row-1-right">
+      <!-- Step 1: PIN Input -->
+      <div class="card dash-pin-card" id="step-pin">
+        <div class="join-section">
+          <div class="join-label">Nhập mã PIN để tham gia ngay</div>
+          <input id="pin-input" type="text" inputmode="numeric" maxlength="7" placeholder="XXX-XXX" autocomplete="off" />
+          <button class="btn-join" onclick="handleJoin()">Tham gia</button>
+          <div class="error-msg" id="error-msg">❌ Mã phòng sai hoặc không tồn tại</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HÀNG 2 - CỘT TRÁI: Tạo phòng thi -->
+    <div class="action-card dash-row-2-left">
+      <div class="action-card-header">
+        <div class="action-card-icon icon-room">⛫</div>
+        <div class="action-card-titles">
+          <span class="action-card-badge">Trực tuyến</span>
+          <h2 class="action-card-title">Tạo phòng thi</h2>
+        </div>
+      </div>
+      <p class="action-card-desc">
+        Khởi tạo phòng thi trực tuyến từ đề thi đã chuẩn bị sẵn, cấp mã PIN ngẫu nhiên để học sinh tham gia tranh tài trực tiếp.
+      </p>
+      <div class="action-features">
+        <span class="feature-tag">🗲 Tạo phòng nhanh chóng </span>
+        <span class="feature-tag">🗠 Thống kê chi tiết </span>
+      </div>
+      <button class="btn-action btn-action-room" onclick="handleCreateRoom()">ϟ Tạo phòng thi ngay</button>
+    </div>
+
+    <!-- HÀNG 2 - CỘT PHẢI: Lịch sử làm bài & Lịch sử phòng đã tổ chức (mỗi bên 50%) -->
+    <div class="dash-row-2-right sub-row" id="dashboard-sub-row">
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-title">Lịch sử làm bài</span>
+          <div class="history-header-meta">
+            <span class="history-count" id="hist-count">0</span>
+            <div class="history-info-badge" title="Lịch sử 20 bài làm gần đây nhất">
+              <span class="history-info-icon">!</span>
+              <div class="history-info-tooltip">Lịch sử 20 bài làm gần đây nhất</div>
+            </div>
+          </div>
+        </div>
+        <div class="history-scroll" id="hist-list">
+          <div class="history-empty">Chưa có bài thi nào</div>
+        </div>
+      </div>
+      <!-- Khối Lịch sử phòng thi đã tổ chức (tối đa 20 phòng gần nhất) -->
+      <div class="history-card hosted-history-card">
+        <div class="history-card-header">
+          <span class="history-title">Phòng đã tổ chức</span>
+          <div class="history-header-meta">
+            <span class="history-count" id="hosted-count">0</span>
+            <div class="history-info-badge" title="Lịch sử 20 phòng thi đã tổ chức gần đây nhất">
+              <span class="history-info-icon">!</span>
+              <div class="history-info-tooltip">Lịch sử 20 phòng thi đã tổ chức gần đây nhất</div>
+            </div>
+          </div>
+        </div>
+        <div class="history-scroll" id="hosted-list">
+          <div class="history-empty">Chưa có phòng thi nào</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Màn hình Step 2: Chọn Avatar + Nickname (Chính giữa toàn màn hình, giống hệt index.html) -->
+  <div class="card card-wide join-step-view" id="step-nick" style="display:none;">
+    <button class="btn-back-grid" onclick="backToDashboardGrid()" title="Quay lại Bảng điều khiển">← Quay lại</button>
+    <div class="avatar-stage">
+      <div class="avatar-ring">
+        <img id="avatar-preview" src="characters/01.png" alt="avatar" />
+        <div class="avatar-stage-hint">Chọn<br>nhân vật</div>
+      </div>
+    </div>
+    <div class="avatar-grid" id="avatar-grid"></div>
+    <div class="nick-row">
+      <input id="nickname-input" type="text" maxlength="20" placeholder="Nhập nickname của bạn..." autocomplete="off" />
+    </div>
+    <div class="error-msg" id="error-nick">❌ Nickname không được để trống</div>
+    <button class="btn-join" onclick="handleEnter()">Vào phòng</button>
+  </div>
+</main>
+
+<footer>© 2026 Mini Quiz Classroom</footer>
+
+  <script src="js/dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thiết lập phòng thi – Mini Quiz Classroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/home.css" />
+  <link rel="stylesheet" href="css/create-room.css" />
+</head>
+<body>
+
+<!-- ── SKY / CLOUDS ── -->
+<div class="sky">
+  <div class="cloud cloud-1"><svg width="260" height="80" viewBox="0 0 260 80" fill="none"><ellipse cx="130" cy="56" rx="120" ry="28" fill="white"/><ellipse cx="90" cy="42" rx="60" ry="34" fill="white"/><ellipse cx="160" cy="38" rx="52" ry="30" fill="white"/><ellipse cx="220" cy="52" rx="36" ry="22" fill="white"/><ellipse cx="40" cy="52" rx="34" ry="22" fill="white"/></svg></div>
+  <div class="cloud cloud-2"><svg width="180" height="60" viewBox="0 0 180 60" fill="none"><ellipse cx="90" cy="42" rx="82" ry="20" fill="white"/><ellipse cx="60" cy="30" rx="44" ry="26" fill="white"/><ellipse cx="120" cy="28" rx="38" ry="22" fill="white"/><ellipse cx="155" cy="38" rx="24" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-3"><svg width="140" height="50" viewBox="0 0 140 50" fill="none"><ellipse cx="70" cy="36" rx="62" ry="16" fill="white"/><ellipse cx="46" cy="26" rx="34" ry="22" fill="white"/><ellipse cx="96" cy="24" rx="30" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-4"><svg width="300" height="64" viewBox="0 0 300 64" fill="none"><ellipse cx="150" cy="48" rx="138" ry="18" fill="white"/><ellipse cx="100" cy="34" rx="62" ry="28" fill="white"/><ellipse cx="200" cy="30" rx="56" ry="26" fill="white"/><ellipse cx="260" cy="44" rx="36" ry="18" fill="white"/><ellipse cx="46" cy="44" rx="40" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-5"><svg width="100" height="40" viewBox="0 0 100 40" fill="none"><ellipse cx="50" cy="28" rx="44" ry="14" fill="white"/><ellipse cx="34" cy="20" rx="24" ry="18" fill="white"/><ellipse cx="68" cy="18" rx="22" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-6"><svg width="220" height="70" viewBox="0 0 220 70" fill="none"><ellipse cx="110" cy="52" rx="100" ry="20" fill="white"/><ellipse cx="72" cy="36" rx="52" ry="30" fill="white"/><ellipse cx="148" cy="32" rx="46" ry="28" fill="white"/><ellipse cx="192" cy="48" rx="28" ry="18" fill="white"/></svg></div>
+</div>
+
+<!-- Sun / Moon -->
+<div class="sky-body">
+  <div class="sun-wrap">
+    <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#FFD700" stroke-width="3.5" stroke-linecap="round">
+        <line x1="40" y1="2"  x2="40" y2="19"/>
+        <line x1="40" y1="61" x2="40" y2="78"/>
+        <line x1="2"  y1="40" x2="19" y2="40"/>
+        <line x1="61" y1="40" x2="78" y2="40"/>
+        <line x1="13.1" y1="13.1" x2="24.9" y2="24.9"/>
+        <line x1="55.1" y1="55.1" x2="66.9" y2="66.9"/>
+        <line x1="66.9" y1="13.1" x2="55.1" y2="24.9"/>
+        <line x1="24.9" y1="55.1" x2="13.1" y2="66.9"/>
+      </g>
+    </svg>
+  </div>
+  <div class="sun"></div>
+  <div class="moon"></div>
+</div>
+
+<div class="stars" id="stars"></div>
+
+<!-- ── HEADER ── -->
+<header>
+  <a href="dashboard.html" class="app-title" id="app-title" title="Về Bảng điều khiển"></a>
+  <div class="header-right">
+    <button class="btn-dark" id="btn-dark" title="Chuyển chế độ tối/sáng">
+      <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="2"  x2="12" y2="5"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2"  y1="12" x2="5"  y2="12"/>
+        <line x1="19" y1="12" x2="22" y2="12"/>
+        <line x1="4.2" y1="4.2"  x2="6.3" y2="6.3"/>
+        <line x1="17.7" y1="17.7" x2="19.8" y2="19.8"/>
+        <line x1="19.8" y1="4.2"  x2="17.7" y2="6.3"/>
+        <line x1="6.3"  y1="17.7" x2="4.2"  y2="19.8"/>
+      </svg>
+      <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+    <a class="btn-logout" href="dashboard.html" style="background:#475569; color:#fff; border-radius:8px; padding:6px 14px; text-decoration:none; font-weight:600; font-size:0.9rem;">← Bảng điều khiển</a>
+  </div>
+</header>
+
+<!-- ── MAIN CONTAINER ── -->
+<main class="create-room-main">
+  <div class="create-room-container">
+
+    <!-- ══ CỘT TRÁI ══ -->
+    <div class="room-col room-col-left">
+
+      <!-- Khối trên: Tạo phòng thi (Tone Xanh Chàm) -->
+      <div class="room-card card-setup">
+        <div class="card-heading">Tạo phòng thi</div>
+        
+        <div class="form-group">
+          <label class="form-label" for="room-name">Tên phòng</label>
+          <input type="text" id="room-name" class="form-input" placeholder="Nhập tên phòng thi ..." autocomplete="off" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="room-capacity">Số lượng thành viên</label>
+          <input type="number" id="room-capacity" class="form-input" min="1" max="200" value="40" placeholder="Số lượng tối đa..." />
+        </div>
+
+        <div class="form-group">
+          <div class="label-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label class="form-label" style="margin-bottom:0;">Đề thi</label>
+            <span id="exam-assigned-badge" class="exam-assigned-badge" style="display:none;">✓ Đã gán sẵn đề thi</span>
+          </div>
+          <div class="exam-select-container">
+            <div class="custom-select-wrapper" id="custom-exam-wrapper">
+              <div class="custom-select-trigger" id="custom-exam-trigger" onclick="toggleExamDropdown()">
+                <div class="trigger-content">
+                  <span class="trigger-title" id="selected-exam-title">Đang tải danh sách đề thi...</span>
+                  <span class="trigger-meta" id="selected-exam-meta">-- câu hỏi</span>
+                </div>
+                <span class="trigger-arrow">▼</span>
+              </div>
+              <div class="custom-select-dropdown" id="custom-exam-dropdown">
+                <!-- Nạp danh sách đề thi động -->
+              </div>
+            </div>
+            <!-- Icon mắt xem preview đề thi -->
+            <button class="btn-preview-exam" id="btn-preview-current-exam" onclick="previewCurrentExam()" title="Xem trước nội dung đề thi này">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
+          <input type="hidden" id="selected-exam-id" value="" />
+        </div>
+      </div>
+
+      <!-- Khối dưới: Phòng đã tạo (Tone Vàng Cam) -->
+      <div class="room-card card-created-rooms">
+        <div class="card-heading">
+          <span class="card-heading-title">Phòng đã tạo</span>
+          <div class="heading-right-wrap">
+            <span id="created-rooms-count" class="created-count-badge">0/3 phòng</span>
+            <div class="limit-info-badge" title="Bạn có thể giữ chỗ tối đa 3 phòng">
+              <span>!</span>
+              <div class="info-tooltip">Bạn có thể giữ chỗ tối đa 3 phòng</div>
+            </div>
+          </div>
+        </div>
+        <div class="created-rooms-list" id="created-rooms-list" onmouseleave="handleRoomLeave()">
+          <div class="empty-rooms">Chưa có phòng nào được tạo</div>
+        </div>
+      </div>
+
+      <!-- Dưới cùng cột trái: Nút tạo phòng ngay -->
+      <button class="btn-room-action btn-create-now" id="btn-create-room" onclick="handleCreateRoomNow()">
+        + Tạo phòng ngay
+      </button>
+
+    </div>
+
+    <!-- ══ CỘT PHẢI ══ -->
+    <div class="room-col room-col-right">
+
+      <!-- Khối trên: Mã QR (Tone Tím Violet, Khung hình vuông) -->
+      <div class="room-card card-qr">
+        <div class="card-heading">Mã QR</div>
+        <div class="qr-square-wrapper">
+          <div class="qr-placeholder-area" id="qr-area">
+            <div class="qr-empty-hint">Chọn phòng thi để xem mã QR</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Khối dưới: Mã PIN (Tone Xanh Biển) - chỉ hiện thông tin quan trọng duy nhất là mã PIN -->
+      <div class="room-card card-pin">
+        <div class="pin-display-wrap">
+          <span class="pin-code-text is-placeholder" id="pin-display">XXX-XXX</span>
+          <button class="pin-copy-btn" id="btn-copy-pin" onclick="copyPinCode()" title="Sao chép đường dẫn tham gia phòng thi">
+            <svg class="icon-copy" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Dưới cùng cột phải: Vào phòng chờ -->
+      <button class="btn-room-action btn-enter-lobby disabled" id="btn-enter-lobby" onclick="handleEnterLobby()">
+        Vào phòng chờ ➔
+      </button>
+
+    </div>
+
+  </div>
+</main>
+
+<!-- Modal Xem trước đề thi (Quick View) -->
+<div class="modal-overlay" id="quickview-modal" onclick="if(event.target.id==='quickview-modal') closeQuickViewModal()">
+  <div class="modal-card qv-modal-card">
+    <div class="modal-header">
+      <div class="modal-title" id="qv-modal-title">Xem trước đề thi</div>
+      <button class="btn-close-modal" onclick="closeQuickViewModal()">✕</button>
+    </div>
+    <div id="qv-modal-meta" class="qv-meta-bar"></div>
+    <div class="qv-questions-scroll" id="qv-questions-list"></div>
+    <div class="qv-modal-actions" id="qv-modal-actions">
+      <button class="btn-qv-close" onclick="closeQuickViewModal()">Đóng</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal cảnh báo giới hạn phòng -->
+<div class="warning-modal-overlay" id="warning-modal" onclick="if(event.target.id==='warning-modal') closeWarningModal()">
+  <div class="warning-modal-card">
+    <div class="warning-modal-icon">⚠️</div>
+    <div class="warning-modal-title">Giới hạn đặt chỗ</div>
+    <div class="warning-modal-msg" id="warning-modal-msg">Số phòng bạn có thể giữ chỗ đã đạt giới hạn</div>
+    <button class="warning-modal-btn" onclick="closeWarningModal()">Đã hiểu</button>
+  </div>
+</div>
+
+<footer>© 2026 Mini Quiz Classroom</footer>
+
+<script src="js/qrcode.min.js"></script>
+  <script src="js/create-room.js"></script>
+
+<div id="room-toast" class="room-toast"></div>
+
+</body>
+</html>

@@ -1,0 +1,894 @@
+  /* ── Colorize title ── */
+  document.getElementById('app-title').innerHTML =
+    [...'Mini Quiz Classroom'].map(ch =>
+      ch === ' ' ? '<span class="space"> </span>' : '<span>' + ch + '</span>'
+    ).join('');
+
+  /* ── Dark mode ── */
+  (function () {
+    const btn = document.getElementById('btn-dark');
+    const saved = localStorage.getItem('mqc-dark');
+    if (saved === '1') document.body.classList.add('dark');
+    buildStars();
+    if (btn) {
+      btn.addEventListener('click', function () {
+        const isDark = document.body.classList.toggle('dark');
+        localStorage.setItem('mqc-dark', isDark ? '1' : '0');
+      });
+    }
+    function buildStars() {
+      const el = document.getElementById('stars');
+      if (!el) return;
+      el.innerHTML = '';
+      for (let i = 0; i < 60; i++) {
+        const s = document.createElement('div');
+        s.className = 'star';
+        const size = Math.random() * 2.5 + 1;
+        s.style.cssText = [
+          'width:' + size + 'px',
+          'height:' + size + 'px',
+          'top:' + (Math.random() * 90) + '%',
+          'left:' + (Math.random() * 100) + '%',
+          'animation-delay:' + (Math.random() * 3) + 's',
+          'animation-duration:' + (Math.random() * 2 + 1.5) + 's',
+        ].join(';');
+        el.appendChild(s);
+      }
+    }
+  })();
+
+  /* ── HẰNG SỐ THỜI GIAN & GIỚI HẠN ── */
+  const HOLD_DURATION_MS = 24 * 60 * 60 * 1000;          // 24 giờ giữ chỗ
+  const EXPIRE_DURATION_MS = (24 * 60 + 15) * 60 * 1000; // 24 giờ 15 phút hủy phòng
+  const MAX_ROOMS = 3;                                   // Giới hạn tối đa 3 phòng
+
+  /* ── State & Storage ── */
+  let currentUser = null;
+  let userExams = [];
+  let createdRooms = [];
+  let selectedRoomPin = null;
+  let lockedRoomPin = null; // Lưu mã PIN phòng được nháy chuột chọn cố định
+
+  /* ── Helper: Escape HTML ── */
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /* ── Helper: Tạo mã PIN tự nhiên ── */
+  function generateNaturalPin() {
+    const activeRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+    const existingPins = new Set(Object.keys(activeRooms));
+    (createdRooms || []).forEach(r => existingPins.add(r.pin));
+
+    // Bộ lọc tránh các số liên tiếp hoặc 3 số giống hệt nhau
+    function isUnnaturalTriplet(numStr) {
+      if (numStr[0] === numStr[1] && numStr[1] === numStr[2]) return true; // 111, 222...
+      const d1 = Number(numStr[0]);
+      const d2 = Number(numStr[1]);
+      const d3 = Number(numStr[2]);
+      if (d2 === d1 + 1 && d3 === d2 + 1) return true; // 123, 234...
+      if (d2 === d1 - 1 && d3 === d2 - 1) return true; // 321, 432...
+      return false;
+    }
+
+    function generateTriplet() {
+      while (true) {
+        const val = Math.floor(124 + Math.random() * 860);
+        const s = String(val);
+        if (!isUnnaturalTriplet(s)) return s;
+      }
+    }
+
+    for (let attempts = 0; attempts < 50; attempts++) {
+      const part1 = generateTriplet();
+      const part2 = generateTriplet();
+      if (part1 === part2) continue;
+      const candidate = `${part1}-${part2}`;
+      if (!existingPins.has(candidate)) {
+        return candidate;
+      }
+    }
+    return `${Math.floor(100 + Math.random() * 900)}-${Math.floor(100 + Math.random() * 900)}`;
+  }
+
+  /* ── Check Auth & Lấy thông tin IP mạng LAN của máy chủ ── */
+  let serverLanUrl = null;
+  (async function initPage() {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      if (!res.ok) {
+        window.location.href = 'index.html';
+        return;
+      }
+      currentUser = await res.json();
+      
+      // Lấy IP LAN của máy chủ để phục vụ tạo mã QR quét từ máy khác/điện thoại
+      try {
+        const infoRes = await fetch('/api/server-info');
+        if (infoRes.ok) {
+          const info = await infoRes.json();
+          if (info.success && info.lanUrl) {
+            serverLanUrl = info.lanUrl;
+          }
+        }
+      } catch(e) {}
+
+      loadUserExams();
+      loadCreatedRooms();
+    } catch (e) {
+      window.location.href = 'index.html';
+    }
+  })();
+
+  /* ── Load đề thi của User & Quản lý Custom Select ── */
+  let selectedExamId = null;
+
+  async function loadUserExams() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const paramExamId = urlParams.get('examId');
+
+    // 1. Kiểm tra đề thi được gán từ sessionStorage (từ nút Tạo phòng thi ngay)
+    let assignedExam = null;
+    try {
+      const stored = sessionStorage.getItem('mqc_assigned_exam');
+      if (stored) assignedExam = JSON.parse(stored);
+    } catch (e) {}
+
+    const targetExamId = paramExamId || (assignedExam ? assignedExam.id : null);
+    if (targetExamId) {
+      selectedExamId = targetExamId;
+    }
+
+    try {
+      const res = await fetch('/api/storage/private', { credentials: 'same-origin' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.exams)) {
+          userExams = data.exams;
+        }
+      }
+    } catch (e) {
+      try {
+        userExams = JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
+      } catch (err) {}
+    }
+
+    // Nếu có assignedExam từ sessionStorage, đảm bảo có mặt trong userExams
+    if (assignedExam) {
+      if (!userExams) userExams = [];
+      const exIdx = userExams.findIndex(e => e.id === assignedExam.id || (assignedExam.code && e.code === assignedExam.code));
+      if (exIdx >= 0) {
+        userExams[exIdx] = assignedExam;
+      } else {
+        userExams.unshift(assignedExam);
+      }
+      selectedExamId = assignedExam.id;
+    }
+
+    // Nếu có targetExamId mà chưa có trong danh sách, nạp từ localStorage
+    if (targetExamId && (!userExams || !userExams.some(e => e.id === targetExamId || e.code === targetExamId))) {
+      try {
+        const localExams = JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
+        const matchExam = localExams.find(e => e.id === targetExamId || e.code === targetExamId);
+        if (matchExam) {
+          if (!userExams) userExams = [];
+          userExams.unshift(matchExam);
+          selectedExamId = matchExam.id;
+        }
+      } catch (err) {}
+    }
+
+    // Nếu kho cá nhân chưa có hoặc chưa tìm thấy đề, lấy từ ngân hàng public
+    if (!userExams || userExams.length === 0 || (targetExamId && !userExams.some(e => e.id === targetExamId || e.code === targetExamId))) {
+      try {
+        const pRes = await fetch('/api/storage/public');
+        if (pRes.ok) {
+          const pData = await pRes.json();
+          if (pData.success && Array.isArray(pData.exams)) {
+            if (!userExams || userExams.length === 0) {
+              userExams = pData.exams;
+            }
+            if (targetExamId && !userExams.some(e => e.id === targetExamId || e.code === targetExamId)) {
+              const matchPub = pData.exams.find(e => e.id === targetExamId || e.code === targetExamId);
+              if (matchPub) {
+                userExams.unshift(matchPub);
+                selectedExamId = matchPub.id;
+              }
+            }
+          }
+        }
+      } catch (err) {}
+    }
+
+    renderCustomExamSelect();
+
+    // Tự động gán đề thi: hiển thị badge, cập nhật gợi ý tên phòng và focus vào ô Tên phòng
+    if (targetExamId) {
+      const activeExam = userExams.find(e => e.id === selectedExamId || e.id === targetExamId || e.code === targetExamId) || userExams[0];
+      if (activeExam) {
+        selectedExamId = activeExam.id;
+        renderCustomExamSelect();
+
+        const badgeEl = document.getElementById('exam-assigned-badge');
+        if (badgeEl) {
+          badgeEl.style.display = 'inline-block';
+          badgeEl.textContent = '✓ Đã gán sẵn đề thi';
+        }
+
+        const nameInput = document.getElementById('room-name');
+        if (nameInput) {
+          nameInput.placeholder = 'Nhập tên phòng (VD: Phòng thi ' + activeExam.title + ')...';
+          nameInput.focus();
+        }
+
+        showRoomToast('🎯 Đã gán sẵn đề thi "' + activeExam.title + '". Nhập tên phòng và số lượng người tham gia để tạo phòng ngay!');
+      }
+    }
+  }
+
+  function renderCustomExamSelect() {
+    const titleEl = document.getElementById('selected-exam-title');
+    const metaEl = document.getElementById('selected-exam-meta');
+    const dropdownEl = document.getElementById('custom-exam-dropdown');
+    const hiddenIdEl = document.getElementById('selected-exam-id');
+
+    if (!userExams || userExams.length === 0) {
+      titleEl.textContent = 'Chưa có đề thi nào';
+      metaEl.textContent = 'Vui lòng tạo đề trước khi mở phòng';
+      dropdownEl.innerHTML = '<div style="padding:12px; text-align:center; color:#94a3b8; font-size:0.85rem;">Chưa có đề thi nào</div>';
+      hiddenIdEl.value = '';
+      return;
+    }
+
+    if (!selectedExamId || !userExams.some(e => e.id === selectedExamId)) {
+      selectedExamId = userExams[0].id;
+    }
+
+    const currentExam = userExams.find(e => e.id === selectedExamId) || userExams[0];
+    hiddenIdEl.value = currentExam.id;
+    titleEl.textContent = currentExam.title;
+
+    const qCount = currentExam.questions ? currentExam.questions.length : 0;
+    metaEl.innerHTML = `<span style="font-weight:700; color:#4f46e5;">${qCount} câu hỏi</span> • <span>${escapeHtml(currentExam.subject || 'Tổng hợp')}</span> • <span>${escapeHtml(currentExam.code || '#---')}</span>`;
+
+    dropdownEl.innerHTML = userExams.map(ex => {
+      const count = ex.questions ? ex.questions.length : 0;
+      const isSelected = ex.id === selectedExamId;
+      return `
+        <div class="custom-select-option ${isSelected ? 'selected' : ''}" onclick="selectExam('${ex.id}', event)">
+          <div class="option-left">
+            <span class="option-title">${escapeHtml(ex.title)}</span>
+            <div class="option-meta">
+              <span class="option-meta-badge">${escapeHtml(ex.subject || 'Tổng hợp')}</span>
+              <span>${count} câu hỏi</span>
+              <span>(${escapeHtml(ex.code || '#---')})</span>
+            </div>
+          </div>
+          <div class="option-actions">
+            <button class="btn-option-preview" onclick="openQuickViewModal('${ex.id}', event)" title="Xem trước câu hỏi">👁️</button>
+            ${isSelected ? '<span style="color:#4f46e5; font-weight:800; font-size:1rem; margin-left:2px;">✓</span>' : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function toggleExamDropdown(event) {
+    if (event) event.stopPropagation();
+    const wrapper = document.getElementById('custom-exam-wrapper');
+    if (wrapper) wrapper.classList.toggle('open');
+  }
+
+  function selectExam(examId, event) {
+    if (event) event.stopPropagation();
+    selectedExamId = examId;
+    const wrapper = document.getElementById('custom-exam-wrapper');
+    if (wrapper) wrapper.classList.remove('open');
+    renderCustomExamSelect();
+  }
+
+  /* Đóng dropdown hoặc hủy chọn phòng khi bấm ra ngoài */
+  document.addEventListener('click', function(e) {
+    // 1. Đóng dropdown chọn đề thi nếu click ngoài
+    const wrapper = document.getElementById('custom-exam-wrapper');
+    if (wrapper && !wrapper.contains(e.target)) {
+      wrapper.classList.remove('open');
+    }
+
+    // 2. Hủy trạng thái chọn phòng đã tạo khi nháy chuột sang khu vực khác
+    const roomsCard = document.querySelector('.card-created-rooms');
+    const enterBtn = document.getElementById('btn-enter-lobby');
+    const copyBtn = document.getElementById('btn-copy-pin');
+
+    if (roomsCard && !roomsCard.contains(e.target) &&
+        enterBtn && !enterBtn.contains(e.target) &&
+        copyBtn && !copyBtn.contains(e.target)) {
+      if (lockedRoomPin) {
+        lockedRoomPin = null;
+        selectedRoomPin = null;
+        const pinDisplay = document.getElementById('pin-display');
+        const btnLobby = document.getElementById('btn-enter-lobby');
+        if (pinDisplay) {
+          pinDisplay.textContent = 'XXX-XXX';
+          pinDisplay.classList.add('is-placeholder');
+        }
+        if (btnLobby) {
+          btnLobby.classList.add('disabled');
+        }
+        renderRoomQR(null);
+        document.querySelectorAll('.created-room-item').forEach(item => {
+          item.classList.remove('active');
+          item.classList.remove('hover-active');
+        });
+      }
+    }
+  });
+
+  /* ── Preview nội dung đề thi (Quick View Modal) ── */
+  function previewCurrentExam() {
+    if (!selectedExamId) {
+      alert('Vui lòng chọn đề thi để xem trước!');
+      return;
+    }
+    openQuickViewModal(selectedExamId);
+  }
+
+  function openQuickViewModal(examId, event) {
+    if (event) event.stopPropagation();
+    const exam = userExams.find(e => e.id === examId);
+    if (!exam) return;
+
+    document.getElementById('qv-modal-title').textContent = exam.title;
+
+    const authorText = exam.author ? 'Tác giả: ' + escapeHtml(exam.author) : (exam.sharedBy ? 'Người chia sẻ: ' + escapeHtml(exam.sharedBy) : 'Kho đề cá nhân');
+    const qCount = exam.questions ? exam.questions.length : 0;
+    document.getElementById('qv-modal-meta').innerHTML = `
+      <span class="qv-meta-tag">${escapeHtml(exam.subject || 'Tổng hợp')}</span> • 
+      <span>Mã đề: <strong>${escapeHtml(exam.code || '#---')}</strong></span> • 
+      <span><strong>${qCount}</strong> câu hỏi</span> • 
+      <span><strong>${exam.timePerQ || 15}s</strong>/câu</span> • 
+      <span style="color:#64748b;">${authorText}</span>
+    `;
+
+    const letters = ['A', 'B', 'C', 'D'];
+    const listEl = document.getElementById('qv-questions-list');
+    listEl.innerHTML = (exam.questions || []).map((q, i) => {
+      const choicesHtml = (q.choices || []).map((choice, cIdx) => {
+        const isCorrect = q.correct === cIdx;
+        return `<div class="qv-choice-item ${isCorrect ? 'is-correct' : ''}">
+          <span class="qv-choice-letter">${letters[cIdx] || (cIdx+1)}.</span>
+          <span class="qv-choice-text">${escapeHtml(choice)}</span>
+          ${isCorrect ? '<span class="qv-correct-badge">✓ Đáp án đúng</span>' : ''}
+        </div>`;
+      }).join('');
+
+      return `<div class="qv-q-card">
+        <div class="qv-q-header">
+          <span class="qv-q-num">Câu ${i + 1}:</span>
+          <span class="qv-q-text">${escapeHtml(q.text)}</span>
+        </div>
+        <div class="qv-choices-grid">
+          ${choicesHtml}
+        </div>
+      </div>`;
+    }).join('');
+
+    // Nút hành động ở modal preview
+    document.getElementById('qv-modal-actions').innerHTML = `
+      <button class="btn-qv-close" style="background:#4f46e5;" onclick="selectExam('${exam.id}'); closeQuickViewModal();">✓ Chọn đề này</button>
+      <button class="btn-qv-close" onclick="closeQuickViewModal()">Đóng</button>
+    `;
+
+    document.getElementById('quickview-modal').classList.add('show');
+  }
+
+  function closeQuickViewModal() {
+    const modal = document.getElementById('quickview-modal');
+    if (modal) modal.classList.remove('show');
+  }
+
+  /* ── Load danh sách phòng đã tạo & Áp dụng quy tắc dọn dẹp phòng đã hủy/kết thúc/hết hạn ── */
+  function loadCreatedRooms() {
+    const now = Date.now();
+    let raw = [];
+    try {
+      raw = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+    } catch (e) {
+      raw = [];
+    }
+
+    let activeCustomRooms = {};
+    try {
+      activeCustomRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+    } catch (e) {}
+
+    const survivingRooms = [];
+    let customRoomsChanged = false;
+
+    raw.forEach(r => {
+      const age = now - (r.createdAt || now);
+      const isCancelled = (localStorage.getItem(`mqc_room_status_${r.pin}`) === 'cancelled') || r.isCancelled;
+      const isFinished = (localStorage.getItem(`mqc_room_status_${r.pin}`) === 'finished') || r.isFinished;
+      const isExpired = age >= EXPIRE_DURATION_MS;
+
+      // Nếu phòng đã bị hủy, đã hoàn thành hoặc hết hạn -> loại bỏ vĩnh viễn khỏi danh sách đặt chỗ
+      if (isCancelled || isFinished || isExpired) {
+        if (activeCustomRooms[r.pin]) {
+          delete activeCustomRooms[r.pin];
+          customRoomsChanged = true;
+        }
+      } else {
+        survivingRooms.push(r);
+      }
+    });
+
+    localStorage.setItem('mqc_created_rooms', JSON.stringify(survivingRooms));
+    if (customRoomsChanged) {
+      localStorage.setItem('mqc_custom_rooms', JSON.stringify(activeCustomRooms));
+    }
+
+    // Chỉ hiển thị trong danh sách đặt chỗ nếu phòng còn trong thời hạn 24h và chưa bị hủy/kết thúc
+    createdRooms = survivingRooms.filter(r => {
+      const age = now - (r.createdAt || now);
+      const isCancelled = (localStorage.getItem(`mqc_room_status_${r.pin}`) === 'cancelled');
+      const isFinished = (localStorage.getItem(`mqc_room_status_${r.pin}`) === 'finished');
+      return age < HOLD_DURATION_MS && !isCancelled && !isFinished;
+    });
+
+    renderCreatedRoomsList();
+    handleRoomLeave(); // Mặc định không trỏ vào phòng nào: hiện XXX-XXX, QR trắng
+
+    // Kiểm tra đồng bộ ngầm: Nếu phòng đã bị hủy/xóa trên server -> dọn sạch
+    checkServerRoomValidity(createdRooms);
+  }
+
+  async function checkServerRoomValidity(rooms) {
+    if (!rooms || rooms.length === 0) return;
+    let hasChanges = false;
+    for (const r of rooms) {
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(r.pin)}`);
+        if (res.status === 404) {
+          localStorage.setItem(`mqc_room_status_${r.pin}`, 'cancelled');
+          hasChanges = true;
+        } else if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.room) {
+            if (data.room.status === 'cancelled' || data.room.status === 'finished' || data.room.phase === 'finished') {
+              localStorage.setItem(`mqc_room_status_${r.pin}`, 'cancelled');
+              hasChanges = true;
+            }
+          }
+        }
+      } catch(e) {}
+    }
+    if (hasChanges) {
+      // Re-filter local list
+      let raw = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      raw = raw.filter(r => localStorage.getItem(`mqc_room_status_${r.pin}`) !== 'cancelled');
+      localStorage.setItem('mqc_created_rooms', JSON.stringify(raw));
+      createdRooms = raw;
+      renderCreatedRoomsList();
+    }
+  }
+
+  /* ── Render danh sách phòng đã tạo ── */
+  function renderCreatedRoomsList() {
+    const listEl = document.getElementById('created-rooms-list');
+    const countEl = document.getElementById('created-rooms-count');
+    countEl.textContent = `${createdRooms.length}/${MAX_ROOMS} phòng`;
+
+    if (createdRooms.length === 0) {
+      listEl.classList.remove('has-scroll');
+      listEl.innerHTML = '<div class="empty-rooms">Chưa có phòng nào được tạo (giữ chỗ trong 24h)</div>';
+      return;
+    }
+
+    // Nếu có nhiều hơn 1 phòng -> kích hoạt danh sách kéo (scrollable)
+    if (createdRooms.length > 1) {
+      listEl.classList.add('has-scroll');
+    } else {
+      listEl.classList.remove('has-scroll');
+    }
+
+    const now = Date.now();
+
+    listEl.innerHTML = createdRooms.map((r, index) => {
+      const ageMs = now - (r.createdAt || now);
+      const remainingMs = Math.max(0, HOLD_DURATION_MS - ageMs);
+      const remHours = Math.floor(remainingMs / (60 * 60 * 1000));
+      const remMins = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+      const timeTag = `còn ${remHours}h${remMins}m`;
+      const isLocked = (r.pin === lockedRoomPin);
+      const isRoomLocked = !!r.isLocked;
+
+      return `
+        <div class="created-room-item ${isLocked ? 'active' : ''}" data-pin="${r.pin}" onclick="handleRoomClick('${r.pin}', event)" onmouseenter="handleRoomHover('${r.pin}')" title="${escapeHtml(r.name || 'Phòng thi')} - ${timeTag} ${isRoomLocked ? '(Đang khóa)' : ''}">
+          <span class="room-item-index">${index + 1}</span>
+          <div class="room-item-info">
+            <span class="room-item-name">${escapeHtml(r.name || 'Phòng ' + r.pin)}</span>
+            <span class="room-item-time">⏱ ${timeTag} ${isRoomLocked ? '• 🔒 Khóa' : ''}</span>
+          </div>
+          <span class="room-item-pin">${r.pin}</span>
+          <div class="room-item-actions">
+            <button class="btn-lock-room ${isRoomLocked ? 'is-locked' : ''}" onclick="handleToggleLockRoom('${r.pin}', event)" title="${isRoomLocked ? 'Phòng đang khóa (ngăn người khác vào) - Bấm để mở' : 'Phòng đang mở - Bấm để khóa phòng'}">${isRoomLocked ? '🔒' : '🔓'}</button>
+            <button class="btn-try-exam" onclick="handleTryTest('${r.pin}', event)" title="Trải nghiệm thử đề thi phòng này">Thi thử</button>
+            <button class="btn-del-room" onclick="handleDeleteRoom('${r.pin}', event)" title="Xóa phòng thi này (thu hồi mã PIN)">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  /* ── TẠO MÃ QR CHO PHÒNG THI ── */
+  let currentQrCode = null;
+
+  function renderRoomQR(pin) {
+    const qrArea = document.getElementById('qr-area');
+    if (!qrArea) return;
+
+    if (!pin || pin === 'XXX-XXX') {
+      qrArea.className = 'qr-placeholder-area';
+      qrArea.innerHTML = '<div class="qr-empty-hint">Chọn phòng thi để xem mã QR</div>';
+      currentQrCode = null;
+      return;
+    }
+
+    qrArea.className = 'qr-placeholder-area has-qr';
+    qrArea.innerHTML = '';
+
+    // Mã QR trỏ đến domain hiện tại (Cloud Run / AI Studio / Local) kèm mã PIN nhập sẵn
+    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    const targetUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(pin.trim())}`;
+
+    try {
+      currentQrCode = new QRCode(qrArea, {
+        text: targetUrl,
+        width: 200,
+        height: 200,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.L
+      });
+    } catch (err) {
+      console.warn('Lỗi tạo mã QR:', err);
+    }
+  }
+
+  /* ── Khi nháy chuột chọn một phòng đã tạo -> giữ trạng thái cố định ── */
+  function handleRoomClick(pin, event) {
+    if (event) event.stopPropagation();
+    lockedRoomPin = pin;
+    selectedRoomPin = pin;
+
+    const pinDisplay = document.getElementById('pin-display');
+    const enterBtn = document.getElementById('btn-enter-lobby');
+
+    pinDisplay.textContent = pin;
+    pinDisplay.classList.remove('is-placeholder');
+    enterBtn.classList.remove('disabled');
+
+    renderRoomQR(pin);
+
+    document.querySelectorAll('.created-room-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.pin === pin);
+      item.classList.remove('hover-active');
+    });
+  }
+
+  /* ── Khi con trỏ chuột rà (hover) vào phòng ── */
+  function handleRoomHover(pin) {
+    selectedRoomPin = pin;
+    const pinDisplay = document.getElementById('pin-display');
+    const enterBtn = document.getElementById('btn-enter-lobby');
+
+    pinDisplay.textContent = pin;
+    pinDisplay.classList.remove('is-placeholder');
+    enterBtn.classList.remove('disabled');
+
+    renderRoomQR(pin);
+
+    document.querySelectorAll('.created-room-item').forEach(item => {
+      item.classList.toggle('hover-active', item.dataset.pin === pin);
+    });
+  }
+
+  /* ── Khi con trỏ chuột rời khỏi danh sách phòng ── */
+  function handleRoomLeave() {
+    const pinDisplay = document.getElementById('pin-display');
+    const enterBtn = document.getElementById('btn-enter-lobby');
+
+    // Nếu đã nháy chuột chọn một phòng -> giữ nguyên phòng đó
+    if (lockedRoomPin) {
+      selectedRoomPin = lockedRoomPin;
+      pinDisplay.textContent = lockedRoomPin;
+      pinDisplay.classList.remove('is-placeholder');
+      enterBtn.classList.remove('disabled');
+      renderRoomQR(lockedRoomPin);
+
+      document.querySelectorAll('.created-room-item').forEach(item => {
+        item.classList.remove('hover-active');
+        item.classList.toggle('active', item.dataset.pin === lockedRoomPin);
+      });
+      return;
+    }
+
+    // Nếu chưa nháy chọn phòng nào -> hiển thị XXX-XXX, QR để trắng
+    selectedRoomPin = null;
+    pinDisplay.textContent = 'XXX-XXX';
+    pinDisplay.classList.add('is-placeholder');
+    enterBtn.classList.add('disabled');
+    renderRoomQR(null);
+
+    document.querySelectorAll('.created-room-item').forEach(item => {
+      item.classList.remove('hover-active');
+      item.classList.remove('active');
+    });
+  }
+
+  /* ── Khóa / Mở khóa phòng thi ── */
+  async function handleToggleLockRoom(pin, event) {
+    if (event) event.stopPropagation();
+    const room = createdRooms.find(r => r.pin === pin);
+    if (!room) return;
+
+    room.isLocked = !room.isLocked;
+    localStorage.setItem('mqc_created_rooms', JSON.stringify(createdRooms));
+
+    try {
+      const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+      if (customRooms[pin]) {
+        customRooms[pin].isLocked = room.isLocked;
+        localStorage.setItem('mqc_custom_rooms', JSON.stringify(customRooms));
+      }
+    } catch (e) {}
+
+    // Gửi cập nhật trạng thái khóa lên máy chủ
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(pin)}/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isLocked: room.isLocked })
+      });
+    } catch (err) {}
+
+    renderCreatedRoomsList();
+  }
+
+  /* ── Xóa phòng thi ── */
+  async function handleDeleteRoom(pin, event) {
+    if (event) event.stopPropagation();
+    if (!confirm(`Bạn có chắc muốn xóa phòng thi (${pin}) khỏi danh sách?`)) return;
+
+    if (lockedRoomPin === pin) {
+      lockedRoomPin = null;
+    }
+
+    // 1. Xóa khỏi createdRooms
+    createdRooms = createdRooms.filter(r => r.pin !== pin);
+    localStorage.setItem('mqc_created_rooms', JSON.stringify(createdRooms));
+
+    // 2. Xóa khỏi customRooms & phát tín hiệu hủy phòng cho các máy/tab đang đợi
+    try {
+      const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+      delete customRooms[pin];
+      localStorage.setItem('mqc_custom_rooms', JSON.stringify(customRooms));
+      localStorage.setItem(`mqc_room_status_${pin}`, 'cancelled');
+      localStorage.removeItem(`mqc_waiting_players_${pin}`);
+    } catch (e) {}
+
+    // 3. Gọi DELETE server
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(pin)}`, { method: 'DELETE' });
+    } catch (err) {}
+
+    // 4. Render lại UI & reset mã PIN về XXX-XXX
+    renderCreatedRoomsList();
+    handleRoomLeave();
+  }
+
+  /* ── Thi thử phòng thi ── */
+  function handleTryTest(pin, event) {
+    if (event) event.stopPropagation();
+    const targetRoom = createdRooms.find(r => r.pin === pin);
+    if (!targetRoom) return;
+
+    let customRooms = {};
+    try {
+      customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+    } catch (e) {}
+
+    const roomDetail = customRooms[pin] || targetRoom;
+
+    // Sinh phòng test ngẫu nhiên
+    const testPin = 'TEST-' + Math.floor(100 + Math.random() * 900);
+    const testRoomData = {
+      pin: testPin,
+      name: '[Thi thử] ' + (targetRoom.name || 'Phòng thi'),
+      title: targetRoom.title || roomDetail.title || 'Bài thi trắc nghiệm',
+      questions: roomDetail.questions || [],
+      timePerQ: roomDetail.timePerQ || 15,
+      isTest: true,
+      originalPin: pin,
+      createdAt: Date.now()
+    };
+
+    customRooms[testPin] = testRoomData;
+    localStorage.setItem('mqc_custom_rooms', JSON.stringify(customRooms));
+
+    // Đưa chủ phòng thẳng vào room test
+    window.location.href = `room.html?pin=${encodeURIComponent(testPin)}&nick=Chủ phòng (Thi thử)&av=01&isTest=1`;
+  }
+
+  /* ── Xử lý: Tạo phòng ngay ── */
+  async function handleCreateRoomNow() {
+    // Kiểm tra giới hạn 3 phòng
+    if (createdRooms.length >= MAX_ROOMS) {
+      showWarningModal('Số phòng bạn có thể giữ chỗ đã đạt giới hạn');
+      return;
+    }
+
+    const nameInput = document.getElementById('room-name');
+    const capacityInput = document.getElementById('room-capacity');
+
+    const roomName = nameInput.value.trim() || ('Phòng thi ' + chosenExam.title);
+    const capacity = parseInt(capacityInput.value) || 40;
+    const examId = document.getElementById('selected-exam-id')?.value || selectedExamId;
+
+    const chosenExam = userExams.find(e => e.id === examId) || userExams[0];
+    if (!chosenExam) {
+      alert('Vui lòng tạo hoặc chọn đề thi trước khi mở phòng!');
+      return;
+    }
+
+    // Xóa đề thi đã gán tạm khỏi sessionStorage sau khi tạo phòng thành công
+    sessionStorage.removeItem('mqc_assigned_exam');
+
+    // Sinh mã PIN tự nhiên
+    const pin = generateNaturalPin();
+    const now = Date.now();
+
+    const roomData = {
+      pin,
+      name: roomName,
+      capacity,
+      examId: chosenExam.id,
+      title: chosenExam.title,
+      questions: chosenExam.questions || [],
+      timePerQ: chosenExam.timePerQ || 15,
+      createdAt: now
+    };
+
+    // 1. Lưu vào server qua POST /api/rooms
+    try {
+      await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(roomData)
+      });
+    } catch (err) {
+      console.warn('Lỗi đồng bộ phòng lên server:', err);
+    }
+
+    // 2. Lưu vào custom rooms của client để index/room nhận diện
+    try {
+      const activeRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
+      activeRooms[pin] = roomData;
+      localStorage.setItem('mqc_custom_rooms', JSON.stringify(activeRooms));
+    } catch (e) {}
+
+    // 3. Thêm vào danh sách phòng đã tạo của giáo viên
+    let rawRooms = [];
+    try {
+      rawRooms = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+    } catch (e) {}
+
+    rawRooms.unshift({
+      pin,
+      name: roomName,
+      capacity,
+      title: chosenExam.title,
+      createdAt: now
+    });
+
+    localStorage.setItem('mqc_created_rooms', JSON.stringify(rawRooms));
+
+    // 4. Cập nhật danh sách & chọn cố định phòng mới tạo (hiển thị ngay mã PIN và QR)
+    loadCreatedRooms();
+    handleRoomClick(pin);
+
+    // Reset input tên phòng
+    nameInput.value = '';
+    showRoomToast('🎉 Đã tạo phòng thi "' + roomName + '" thành công! Mã PIN: ' + pin);
+  }
+
+  /* ── Toast thông báo ── */
+  let roomToastTimer = null;
+  function showRoomToast(msg) {
+    let toast = document.getElementById('room-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'room-toast';
+      toast.className = 'room-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(roomToastTimer);
+    roomToastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, 4000);
+  }
+
+  /* ── Modal cảnh báo ── */
+  function showWarningModal(msg) {
+    document.getElementById('warning-modal-msg').textContent = msg || 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn';
+    document.getElementById('warning-modal').classList.add('show');
+  }
+
+  function closeWarningModal() {
+    document.getElementById('warning-modal').classList.remove('show');
+  }
+
+  /* ── Xử lý: Copy liên kết tham gia phòng ── */
+  function copyPinCode() {
+    const pinDisplay = document.getElementById('pin-display');
+    const rawPin = selectedRoomPin || (pinDisplay ? pinDisplay.textContent : '');
+    const cleanPin = (rawPin || '').trim();
+    if (!cleanPin || cleanPin === 'XXX-XXX') return;
+
+    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    const joinUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(cleanPin)}`;
+
+    const copyText = (text) => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+      }
+      return new Promise((resolve, reject) => {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          resolve();
+        } catch (e) {
+          document.body.removeChild(textarea);
+          reject(e);
+        }
+      });
+    };
+
+    copyText(joinUrl).then(() => {
+      const btn = document.getElementById('btn-copy-pin');
+      if (btn) {
+        const oldHtml = btn.innerHTML;
+        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+        setTimeout(() => { btn.innerHTML = oldHtml; }, 1500);
+      }
+    }).catch(() => {});
+  }
+
+  /* ── Xử lý: Vào phòng của Host ── */
+  function handleEnterLobby() {
+    if (!selectedRoomPin || selectedRoomPin === 'XXX-XXX') return;
+    window.location.href = `waiting-for-host.html?pin=${encodeURIComponent(selectedRoomPin)}`;
+  }
+
+  // Nhấn Enter tại ô Tên phòng hoặc Số lượng để tạo phòng ngay
+  document.getElementById('room-name')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleCreateRoomNow();
+  });
+  document.getElementById('room-capacity')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleCreateRoomNow();
+  });
+
+  // Quét cập nhật thời hạn phòng mỗi phút
+  setInterval(loadCreatedRooms, 60 * 1000);

@@ -1,0 +1,6 @@
+{
+  "name": "Mini Quiz Classroom",
+  "description": "Nền tảng thi trắc nghiệm trực tuyến thời gian thực cho lớp học",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

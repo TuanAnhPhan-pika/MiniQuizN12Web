@@ -1,0 +1,33 @@
+Câu 1: Thủ đô của Việt Nam là gì?
+A. TP. Hồ Chí Minh
+B. Hà Nội
+C. Đà Nẵng
+D. Cần Thơ
+Đáp án: B
+
+Câu 2: Đơn vị cơ bản nhỏ nhất của thông tin trong máy tính là gì?
+*A. Bit
+B. Byte
+C. Kilobyte
+D. Megabyte
+
+Câu 3: Hệ điều hành nào dưới đây là mã nguồn mở?
+A. Windows 11
+B. macOS Sonoma
+C. Linux Ubuntu
+D. iOS
+ANSWER: C
+
+Câu 4: Ngôn ngữ lập trình nào sau đây chạy trực tiếp trên trình duyệt web?
+A. Python
+B. C++
+C. Java
+D. JavaScript
+Đáp án đúng: D
+
+Câu 5: Trong hình học phẳng, tổng ba góc trong một tam giác bằng bao nhiêu độ?
+A. 90 độ
+B. 180 độ
+C. 270 độ
+D. 360 độ
+Đáp án: B

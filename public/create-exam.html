@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soạn thảo & Quản lý đề thi – Mini Quiz Classroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/create-exam.css" />
+  <script src="js/mammoth.browser.min.js"></script>
+  <script src="js/xlsx.full.min.js"></script>
+  <script src="js/exam-importer.js"></script>
+</head>
+<body>
+
+<!-- ── SKY / CLOUDS ── -->
+<div class="sky">
+  <div class="cloud cloud-1"><svg width="260" height="80" viewBox="0 0 260 80" fill="none"><ellipse cx="130" cy="56" rx="120" ry="28" fill="white"/><ellipse cx="90" cy="42" rx="60" ry="34" fill="white"/><ellipse cx="160" cy="38" rx="52" ry="30" fill="white"/><ellipse cx="220" cy="52" rx="36" ry="22" fill="white"/><ellipse cx="40" cy="52" rx="34" ry="22" fill="white"/></svg></div>
+  <div class="cloud cloud-2"><svg width="180" height="60" viewBox="0 0 180 60" fill="none"><ellipse cx="90" cy="42" rx="82" ry="20" fill="white"/><ellipse cx="60" cy="30" rx="44" ry="26" fill="white"/><ellipse cx="120" cy="28" rx="38" ry="22" fill="white"/><ellipse cx="155" cy="38" rx="24" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-3"><svg width="140" height="50" viewBox="0 0 140 50" fill="none"><ellipse cx="70" cy="36" rx="62" ry="16" fill="white"/><ellipse cx="46" cy="26" rx="34" ry="22" fill="white"/><ellipse cx="96" cy="24" rx="30" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-4"><svg width="300" height="64" viewBox="0 0 300 64" fill="none"><ellipse cx="150" cy="48" rx="138" ry="18" fill="white"/><ellipse cx="100" cy="34" rx="62" ry="28" fill="white"/><ellipse cx="200" cy="30" rx="56" ry="26" fill="white"/><ellipse cx="260" cy="44" rx="36" ry="18" fill="white"/><ellipse cx="46" cy="44" rx="40" ry="20" fill="white"/></svg></div>
+  <div class="cloud cloud-5"><svg width="100" height="40" viewBox="0 0 100 40" fill="none"><ellipse cx="50" cy="28" rx="44" ry="14" fill="white"/><ellipse cx="34" cy="20" rx="24" ry="18" fill="white"/><ellipse cx="68" cy="18" rx="22" ry="16" fill="white"/></svg></div>
+  <div class="cloud cloud-6"><svg width="220" height="70" viewBox="0 0 220 70" fill="none"><ellipse cx="110" cy="52" rx="100" ry="20" fill="white"/><ellipse cx="72" cy="36" rx="52" ry="30" fill="white"/><ellipse cx="148" cy="32" rx="46" ry="28" fill="white"/><ellipse cx="192" cy="48" rx="28" ry="18" fill="white"/></svg></div>
+</div>
+
+<!-- Sun / Moon -->
+<div class="sky-body">
+  <div class="sun-wrap">
+    <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#FFD700" stroke-width="3.5" stroke-linecap="round">
+        <line x1="40" y1="2"  x2="40" y2="19"/>
+        <line x1="40" y1="61" x2="40" y2="78"/>
+        <line x1="2"  y1="40" x2="19" y2="40"/>
+        <line x1="61" y1="40" x2="78" y2="40"/>
+        <line x1="13.1" y1="13.1" x2="24.9" y2="24.9"/>
+        <line x1="55.1" y1="55.1" x2="66.9" y2="66.9"/>
+        <line x1="66.9" y1="13.1" x2="55.1" y2="24.9"/>
+        <line x1="24.9" y1="55.1" x2="13.1" y2="66.9"/>
+      </g>
+    </svg>
+  </div>
+  <div class="sun"></div>
+  <div class="moon"></div>
+</div>
+
+<div class="stars" id="stars"></div>
+
+<!-- ── HEADER ── -->
+<header>
+  <a href="dashboard.html" class="app-title" id="app-title" title="Về Bảng điều khiển"></a>
+  <div class="header-right">
+    <button class="btn-dark" id="btn-dark" title="Chuyển chế độ tối/sáng">
+      <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="2"  x2="12" y2="5"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2"  y1="12" x2="5"  y2="12"/>
+        <line x1="19" y1="12" x2="22" y2="12"/>
+        <line x1="4.2" y1="4.2"  x2="6.3" y2="6.3"/>
+        <line x1="17.7" y1="17.7" x2="19.8" y2="19.8"/>
+        <line x1="19.8" y1="4.2"  x2="17.7" y2="6.3"/>
+        <line x1="6.3"  y1="17.7" x2="4.2"  y2="19.8"/>
+      </svg>
+      <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+    <a class="btn-back-dash" href="dashboard.html">← Bảng điều khiển</a>
+  </div>
+</header>
+
+<!-- ── MAIN ── -->
+<main class="exam-main">
+  <div class="exam-container">
+
+    <!-- ── 4 OPTION TABS ── -->
+    <div class="options-nav">
+      <!-- Option 1: Tạo đề thi thủ công -->
+      <div class="option-tab active" id="tab-btn-create" onclick="switchTab('create')">
+        <div class="option-tab-icon tab-icon-create">✏️</div>
+        <div class="option-tab-text">
+          <div class="option-tab-title">Tạo đề thủ công</div>
+        </div>
+      </div>
+
+      <!-- Option 2: Nhập đề từ file -->
+      <div class="option-tab" id="tab-btn-import" onclick="switchTab('import')">
+        <div class="option-tab-icon tab-icon-import">📥</div>
+        <div class="option-tab-text">
+          <div class="option-tab-title">Nhập đề từ file</div>
+        </div>
+      </div>
+
+      <!-- Option 3: Chọn đề thi từ ngân hàng -->
+      <div class="option-tab" id="tab-btn-library" onclick="switchTab('library')">
+        <div class="option-tab-icon tab-icon-library">📚</div>
+        <div class="option-tab-text">
+          <div class="option-tab-title">Chọn đề ngân hàng</div>
+        </div>
+      </div>
+
+      <!-- Option 4: Chia sẻ đề thi của bạn -->
+      <div class="option-tab" id="tab-btn-share" onclick="switchTab('share')">
+        <div class="option-tab-icon tab-icon-share">🔗</div>
+        <div class="option-tab-text">
+          <div class="option-tab-title">Chia sẻ đề thi</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         TAB 1: TẠO ĐỀ THI CỦA RIÊNG BẠN (HOÀN THIỆN)
+         ════════════════════════════════════════════ -->
+    <div class="tab-content active" id="tab-create">
+      <div class="create-grid">
+
+        <!-- Left: Form thông tin & Form soạn câu hỏi -->
+        <div class="editor-card">
+          <div class="editor-card-header">
+            <div class="editor-card-title">Soạn thảo câu hỏi</div>
+            <span class="page-badge">Đang soạn thảo</span>
+          </div>
+
+          <!-- Thông tin chung đề thi -->
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="exam-title">Tên đề thi *</label>
+              <input class="form-input" id="exam-title" type="text" placeholder="VD: Kiểm tra 15 phút Toán học" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="exam-subject">Môn học / Khối lớp</label>
+              <input class="form-input" id="exam-subject" type="text" placeholder="VD: Toán học 6" autocomplete="off" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="exam-time">Thời gian mỗi câu</label>
+              <select class="form-select" id="exam-time">
+                <option value="10">10 giây (Nhanh)</option>
+                <option value="15" selected>15 giây (Mặc định)</option>
+                <option value="20">20 giây</option>
+                <option value="30">30 giây</option>
+                <option value="60">60 giây (Tự luận ngắn)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="exam-points">Điểm tối đa mỗi câu</label>
+              <input class="form-input" id="exam-points" type="number" value="100" min="10" max="1000" step="10" />
+            </div>
+          </div>
+
+          <!-- Khu vực soạn câu hỏi -->
+          <div class="editor-card-header" style="margin-top: 6px;">
+            <div class="editor-card-title" id="q-form-heading">➕ Thêm câu hỏi mới</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="q-text">Nội dung câu hỏi *</label>
+            <textarea class="form-textarea" id="q-text" placeholder="Nhập nội dung câu hỏi tại đây..."></textarea>
+          </div>
+
+          <!-- 4 Đáp án -->
+          <div class="choices-editor">
+            <!-- Choice A -->
+            <div class="choice-edit-row is-correct" id="choice-row-0">
+              <div class="choice-letter-badge">A</div>
+              <input class="choice-input" id="choice-input-0" type="text" placeholder="Nhập nội dung đáp án ..." />
+              <label class="correct-radio-label">
+                <input type="radio" name="correct-answer" value="0" checked onchange="updateCorrectChoiceHighlight()" /> Đúng
+              </label>
+            </div>
+
+            <!-- Choice B -->
+            <div class="choice-edit-row" id="choice-row-1">
+              <div class="choice-letter-badge">B</div>
+              <input class="choice-input" id="choice-input-1" type="text" placeholder="Nhập nội dung đáp án ..." />
+              <label class="correct-radio-label">
+                <input type="radio" name="correct-answer" value="1" onchange="updateCorrectChoiceHighlight()" /> Đúng
+              </label>
+            </div>
+
+            <!-- Choice C -->
+            <div class="choice-edit-row" id="choice-row-2">
+              <div class="choice-letter-badge">C</div>
+              <input class="choice-input" id="choice-input-2" type="text" placeholder="Nhập nội dung đáp án ..." />
+              <label class="correct-radio-label">
+                <input type="radio" name="correct-answer" value="2" onchange="updateCorrectChoiceHighlight()" /> Đúng
+              </label>
+            </div>
+
+            <!-- Choice D -->
+            <div class="choice-edit-row" id="choice-row-3">
+              <div class="choice-letter-badge">D</div>
+              <input class="choice-input" id="choice-input-3" type="text" placeholder="Nhập nội dung đáp án ..." />
+              <label class="correct-radio-label">
+                <input type="radio" name="correct-answer" value="3" onchange="updateCorrectChoiceHighlight()" /> Đúng
+              </label>
+            </div>
+          </div>
+
+          <div class="q-btn-row">
+            <button class="btn-add-q" id="btn-save-q" onclick="handleSaveQuestion()">➕ Thêm câu hỏi vào đề</button>
+            <button class="btn-cancel-edit" id="btn-cancel-q" onclick="cancelEditQuestion()">Hủy sửa</button>
+          </div>
+        </div>
+
+        <!-- Right: Danh sách câu hỏi trong đề -->
+        <div class="preview-col">
+          <div class="preview-card">
+            <div class="preview-header">
+              <div class="preview-title">Danh sách câu hỏi</div>
+              <span class="preview-badge-count" id="q-count-badge">0 câu hỏi</span>
+            </div>
+
+            <div class="questions-scroll-list" id="questions-list">
+              <div class="empty-questions-hint">
+                Chưa có câu hỏi nào trong đề thi.<br>
+                Hãy điền nội dung ở cột bên trái và bấm <b>"+ Thêm câu hỏi vào đề"</b>.
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="exam-footer-actions">
+              <button class="btn-save-exam" onclick="handleSaveExam()">💾 Lưu đề thi</button>
+              <button class="btn-launch-room" onclick="handleCreateRoomFromCurrent()">🚀 Tạo phòng thi ngay</button>
+              <button class="btn-clear-exam" onclick="handleClearAll()" title="Xóa toàn bộ câu hỏi của đề thi đang sửa">↺</button>
+            </div>
+          </div>
+
+          <!-- Hộp thao tác: Chỉnh sửa đề thi (dưới Danh sách câu hỏi) -->
+          <div class="preview-card edit-exams-card">
+            <div class="preview-header">
+              <div class="preview-title">Chỉnh sửa đề thi</div>
+              <span class="preview-badge-count" id="saved-exams-count-badge">0 đề thi</span>
+            </div>
+            <button class="btn-add-new-exam" onclick="handleAddNewExam()">
+              <span>➕ Thêm đề thi mới</span>
+            </button>
+            <div class="saved-exams-scroll-list" id="saved-exams-list">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         TAB 2: NHẬP ĐỀ THI TỪ FILE (IMPORT)
+         ════════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-import">
+      <div class="import-card">
+        <div class="editor-card-header">
+          <div>
+            <div class="editor-card-title">📥 Nhập đề thi tự động từ tập tin</div>
+          </div>
+          <span class="page-badge">Nhập đề thông minh</span>
+        </div>
+
+        <!-- Sample files & supported formats notice -->
+        <div class="import-formats-bar">
+          <div class="import-formats-label">
+            <span class="format-pill">📄 Word (.docx)</span>
+            <span class="format-pill">📊 Excel (.xlsx, .xls)</span>
+            <span class="format-pill">📑 CSV</span>
+            <span class="format-pill">📝 Text (.txt) / Aiken</span>
+            <span class="format-pill">{ } JSON</span>
+          </div>
+          <div class="import-sample-links">
+            <span style="font-size: 0.85rem; color: var(--gray-text, #666); font-weight: 700;">Tải file mẫu:</span>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Word.docx" download="Mau_De_Thi_Word.docx" title="Tải file mẫu Word (.docx)">📄 Mẫu Word</a>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Mini_Quiz.xlsx" download="Mau_De_Thi_Mini_Quiz.xlsx" title="Tải file mẫu Excel (.xlsx)">📊 Mẫu Excel</a>
+            <a class="btn-sample-dl" href="samples/Mau_De_Thi_Aiken.txt" download="Mau_De_Thi_Aiken.txt" title="Tải file mẫu Text (.txt) / Aiken">📝 Mẫu Text/Aiken</a>
+          </div>
+        </div>
+
+        <!-- Toggle Input Mode: File Dropzone vs Direct Paste -->
+        <div class="import-mode-toggle">
+          <button type="button" class="btn-mode-toggle active" id="btn-mode-file" onclick="switchImportMode('file')">
+            📁 Tải lên tập tin
+          </button>
+          <button type="button" class="btn-mode-toggle" id="btn-mode-text" onclick="switchImportMode('text')">
+            📋 Dán văn bản trắc nghiệm trực tiếp
+          </button>
+        </div>
+
+        <!-- Mode 1: File Dropzone -->
+        <div id="import-mode-file-panel">
+          <div class="dropzone" id="exam-dropzone" onclick="document.getElementById('import-file-input').click()">
+            <input type="file" id="import-file-input" accept=".docx,.xlsx,.xls,.csv,.txt,.json" style="display:none;" onchange="handleImportFileInput(this.files)" />
+            <div class="dropzone-icon">📥</div>
+            <div class="dropzone-title">Kéo & thả file đề thi vào đây hoặc <span class="dropzone-browse">chọn từ máy tính</span></div>
+            <div class="dropzone-hint">
+              Hệ thống tự động nhận diện câu hỏi: <b>"Câu 1: ... A. B. C. D. Đáp án: A"</b>, hoặc bảng đáp án ở cuối đề (1-A 2-B), hoặc định dạng Moodle/Aiken, hoặc bảng tính Excel.
+            </div>
+          </div>
+        </div>
+
+        <!-- Mode 2: Direct Text Area -->
+        <div id="import-mode-text-panel" style="display:none;">
+          <div class="paste-text-wrap">
+            <textarea id="import-raw-text" class="import-textarea" rows="9" placeholder="Dán nội dung đề thi vào đây... Ví dụ:&#10;&#10;Câu 1: Thủ đô của Việt Nam là gì?&#10;A. Hà Nội&#10;B. TP. Hồ Chí Minh&#10;C. Đà Nẵng&#10;D. Hải Phòng&#10;Đáp án: A&#10;&#10;Câu 2: Đâu là ngôn ngữ lập trình chạy trên trình duyệt web?&#10;*A. JavaScript&#10;B. Pascal&#10;C. Fortran&#10;D. COBOL&#10;&#10;Câu 3: 1 byte bằng bao nhiêu bit?&#10;A. 4   B. 8   C. 16   D. 32&#10;Đáp án: B"></textarea>
+            <div class="paste-actions">
+              <button type="button" class="btn-parse-text" onclick="handleImportPastedText()">⚡ Trích xuất câu hỏi</button>
+              <button type="button" class="btn-clear-text" onclick="document.getElementById('import-raw-text').value=''">Xóa trắng</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Loading spinner -->
+        <div id="import-loading" class="import-loading" style="display:none;">
+          <div class="import-spinner"></div>
+          <div id="import-loading-text">Đang phân tích tập tin đề thi...</div>
+        </div>
+
+        <!-- Preview & Result Section (Hidden until questions parsed) -->
+        <div id="import-preview-section" style="display:none;" class="import-preview-section">
+          <div class="preview-section-header">
+            <div class="preview-section-title">
+              <span>📋 Kết quả nhận diện đề thi</span>
+              <span class="preview-badge-count" id="import-q-count-badge">0 câu hỏi</span>
+            </div>
+            <button type="button" class="btn-reimport" onclick="resetImportPreview()">↻ Chọn file khác</button>
+          </div>
+
+          <!-- Metadata configuration -->
+          <div class="import-meta-grid">
+            <div class="form-group">
+              <label class="form-label" for="import-exam-title">Tên đề thi *</label>
+              <input class="form-input" id="import-exam-title" type="text" placeholder="Nhập tên đề thi..." />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="import-exam-subject">Môn học</label>
+              <input class="form-input" id="import-exam-subject" type="text" placeholder="Ví dụ: Tin học, Tiếng Anh..." />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="import-exam-time">Thời gian / câu (giây)</label>
+              <input class="form-input" id="import-exam-time" type="number" min="5" max="300" value="15" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="import-exam-points">Điểm mỗi câu</label>
+              <input class="form-input" id="import-exam-points" type="number" min="10" max="1000" step="10" value="100" />
+            </div>
+          </div>
+
+          <div style="font-size: 0.88rem; color: var(--gray-text, #666); margin-top: 4px;">
+            💡 <i>Kiểm tra lại câu hỏi bên dưới. Bạn có thể chỉnh sửa nội dung hoặc bấm vào lựa chọn để thay đổi đáp án đúng trước khi tạo phòng / lưu:</i>
+          </div>
+
+          <!-- Question list preview -->
+          <div class="import-questions-container" id="import-questions-list">
+            <!-- Dynamic question cards -->
+          </div>
+
+          <!-- 3 Instant Action Buttons -->
+          <div class="import-action-bar">
+            <button type="button" class="btn-import-action btn-import-launch" onclick="handleCreateRoomFromImported()" title="Tạo phòng thi và gán ngay đề này">
+              🚀 Tạo phòng thi ngay với đề này
+            </button>
+            <button type="button" class="btn-import-action btn-import-save" onclick="handleSaveImportedExam()" title="Lưu đề thi này vào kho cá nhân">
+              💾 Lưu vào kho đề cá nhân
+            </button>
+            <button type="button" class="btn-import-action btn-import-editor" onclick="handleApplyImportToEditor()" title="Chuyển dữ liệu sang trình soạn thảo để chỉnh sửa thêm">
+              ✏️ Nạp vào bảng soạn thảo thủ công
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         TAB 3: CHỌN ĐỀ THI CÓ SẴN (LIBRARY)
+         ════════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-library">
+      <!-- Search & Filter Bar theo môn học -->
+      <div class="library-filter-panel">
+        <div class="lib-search-row">
+          <div class="lib-search-input-wrap">
+            <span class="lib-search-icon">🔍</span>
+            <input type="text" id="lib-search-subject" list="lib-subject-suggestions" placeholder="Nhập nội dung tìm kiếm ..." autocomplete="off" oninput="handleLibSearchInput()" />
+            <datalist id="lib-subject-suggestions">
+              <!-- Gợi ý môn học nạp tự động -->
+            </datalist>
+            <button class="btn-clear-search" id="btn-clear-lib-search" onclick="clearLibSubjectFilter()" title="Xóa tìm kiếm" style="display:none;">✕</button>
+          </div>
+        </div>
+        <div class="lib-quick-tags" id="lib-quick-tags">
+          <!-- Các nhãn môn học chọn nhanh -->
+        </div>
+      </div>
+
+      <!-- Lưới đề thi (9 đề / trang) -->
+      <div class="library-grid" id="library-grid">
+        <!-- Built dynamically from PRESET_EXAMS -->
+      </div>
+
+      <!-- Điều hướng phân trang -->
+      <div class="library-pagination" id="library-pagination">
+        <!-- Dãy số trang & Ô nhảy trang nạp tự động -->
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════
+         TAB 3: CHIA SẺ ĐỀ THI CỦA BẠN (SHARE)
+         ════════════════════════════════════════════ -->
+    <div class="tab-content" id="tab-share">
+      <div class="share-card">
+        <div class="editor-card-header">
+          <div class="editor-card-title">🔗 Danh sách đề thi & Chia sẻ</div>
+          <span class="page-badge">Quản lý chia sẻ</span>
+        </div>
+
+        <div class="share-section">
+          <!-- Phần 1: Đề thi chưa chia sẻ -->
+          <div class="share-group-block">
+            <div class="share-group-title">
+              <span>📂 Đề thi chưa chia sẻ</span>
+              <span class="share-badge-count" id="unshared-count-badge">0 đề thi</span>
+            </div>
+            <div class="share-scroll-container" id="unshared-list">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+
+          <!-- Phần 2: Đề thi đã chia sẻ lên Ngân hàng (xếp ở dưới cùng) -->
+          <div class="share-group-block">
+            <div class="share-group-title">
+              <span>🌐 Đề thi đã chia sẻ</span>
+              <span class="share-badge-count" id="shared-count-badge">0 đề thi</span>
+            </div>
+            <div class="share-scroll-container" id="shared-list">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- Modal Xem nhanh đề thi từ Ngân hàng -->
+<div class="modal-overlay" id="quickview-modal" onclick="if(event.target.id==='quickview-modal') closeQuickViewModal()">
+  <div class="modal-card qv-modal-card">
+    <div class="modal-header">
+      <div class="modal-title" id="qv-modal-title">Xem trước đề thi</div>
+      <button class="btn-close-modal" onclick="closeQuickViewModal()">✕</button>
+    </div>
+    <div id="qv-modal-meta" class="qv-meta-bar"></div>
+    <div class="qv-questions-scroll" id="qv-questions-list"></div>
+    <div class="qv-modal-actions" id="qv-modal-actions"></div>
+  </div>
+</div>
+
+<!-- Modal Nhập mô tả trước khi chia sẻ lên Ngân hàng -->
+<div class="modal-overlay" id="share-modal" onclick="if(event.target.id==='share-modal') closeShareModal()">
+  <div class="modal-card share-modal-card">
+    <div class="modal-header">
+      <div class="modal-title">🌐 Chia sẻ đề thi lên Ngân hàng</div>
+      <button class="btn-close-modal" onclick="closeShareModal()">✕</button>
+    </div>
+    <div class="share-modal-info" id="share-modal-exam-info">
+      <!-- Tên đề, mã đề, số lượng câu nạp tự động -->
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="share-author-display">Tên tác giả hiển thị trên Ngân hàng</label>
+      <input class="login-form-input" id="share-author-display" type="text" readonly disabled style="background: var(--blue-light); cursor: not-allowed;" />
+      <div class="login-hint">Tên hiển thị tài khoản của bạn (được gắn làm tác giả bộ đề)</div>
+    </div>
+    <div class="login-form-group">
+      <label class="login-form-label" for="share-desc-input">Mô tả nội dung bộ đề *</label>
+      <textarea class="share-desc-textarea" id="share-desc-input" rows="4" placeholder="Nhập tóm tắt kiến thức, lưu ý hoặc độ tuổi/khối lớp phù hợp của đề thi..."></textarea>
+      <div class="login-hint">Mô tả này sẽ xuất hiện trên thẻ đề thi trong Ngân hàng đề công khai</div>
+    </div>
+    <div class="share-modal-actions">
+      <button class="btn-cancel-modal" onclick="closeShareModal()">Hủy</button>
+      <button class="btn-confirm-share" onclick="confirmShareExam()">🌐 Xác nhận chia sẻ</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Cảnh báo nội dung bản sao chưa đủ 10% khác biệt -->
+<div class="modal-overlay" id="share-warning-modal" onclick="if(event.target.id==='share-warning-modal') closeShareWarningModal()">
+  <div class="modal-card" style="max-width: 450px; text-align: center; gap: 16px; border: 1px solid #ffeeba;">
+    <div style="width: 58px; height: 58px; margin: 0 auto; background: #fff3cd; color: #b45309; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; border: 2px solid #ffeeba; box-shadow: 0 4px 12px rgba(180,83,9,0.15);">
+      ⚠️
+    </div>
+    <div style="font-size: 1.22rem; font-weight: 800; color: var(--navy-dark);">Chưa thể chia sẻ đề thi</div>
+    <div id="share-warning-msg" style="font-size: 0.92rem; line-height: 1.6; color: #495057; text-align: left; background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px; padding: 14px 16px;">
+      <!-- Nội dung cảnh báo nạp tự động -->
+    </div>
+    <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px;">
+      <button class="btn-cancel-modal" onclick="closeShareWarningModal()" style="flex: 1; padding: 10px 14px; font-weight: 600;">Đóng</button>
+      <button id="btn-warning-edit-now" class="btn-confirm-share" style="flex: 1.4; background: #E65100; padding: 10px 14px; font-weight: 700; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; text-align: center;" onclick="handleWarningEditNow()">Chỉnh sửa ngay</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div class="toast-msg" id="toast">Thông báo</div>
+
+<footer>© 2026 Mini Quiz Classroom</footer>
+
+<script src="js/create-exam.js"></script>
+</body>
+</html>
