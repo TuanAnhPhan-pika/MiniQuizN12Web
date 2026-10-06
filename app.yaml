@@ -4,3 +4,5 @@ env_variables:
   PORT: "8080"
   NODE_ENV: "production"
   APP_URL: "https://mini-quiz-classroom-n12.ai.studio"
+  DATA_BACKEND: "pg"
+  # Cần cung cấp DATABASE_URL hợp lệ khi deploy; không commit mật khẩu DB.

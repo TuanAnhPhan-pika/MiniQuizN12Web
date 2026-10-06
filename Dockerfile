@@ -1,8 +1,9 @@
 FROM node:20-alpine
 WORKDIR /app
 
-# Ứng dụng dùng Node.js stdlib (http, crypto, fs, path, os) - không cần npm install thêm
+# Cài các dependency runtime (pg, dotenv, Supabase SDK).
 COPY package*.json ./
+RUN npm install --omit=dev --ignore-scripts --package-lock=false
 
 # Sao chép mã nguồn ứng dụng
 COPY . .
