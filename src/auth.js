@@ -1,15 +1,7 @@
-// Module xác thực: user store, session, chống spam đăng nhập/đăng ký.
-// Toàn bộ dùng Node stdlib (crypto/fs) — không thêm dependency.
+// Module xác thực: user store, session, rate-limiting chống spam.
+// Source of truth: PostgreSQL / Supabase
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const supabase = require('./db/supabase.js');
-
-const AUTH_DIR = process.env.MQC_AUTH_DIR || path.join(__dirname, '..', 'data', 'auth');
-const USERS_FILE = path.join(AUTH_DIR, 'users.json');
-const SESSIONS_FILE = path.join(AUTH_DIR, 'sessions.json');
-const LOGIN_ATTEMPTS_FILE = path.join(AUTH_DIR, 'login_attempts.json');
-const REGISTER_ATTEMPTS_FILE = path.join(AUTH_DIR, 'register_attempts.json');
+const db = require('./db/index.js');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 7 * DAY_MS;
@@ -24,26 +16,61 @@ const LOGIN_WINDOW_MS = DAY_MS;       // cửa sổ đếm lỗi reset sau 1 ng�
 const REGISTER_LIMIT = 5;             // tối đa 5 tài khoản
 const REGISTER_WINDOW_MS = 60 * 60 * 1000; // mỗi giờ / IP
 
-function ensureAuthDirs() {
-  if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
-  for (const f of [USERS_FILE, SESSIONS_FILE, LOGIN_ATTEMPTS_FILE, REGISTER_ATTEMPTS_FILE]) {
-    if (!fs.existsSync(f)) fs.writeFileSync(f, '{}', 'utf8');
-  }
-  if (!fs.existsSync(USERS_FILE) || fs.readFileSync(USERS_FILE, 'utf8').trim() === '{}') {
-    fs.writeFileSync(USERS_FILE, '[]', 'utf8');
-  }
-}
-ensureAuthDirs();
+// In-memory cache synced with PostgreSQL
+const memoryUsers = new Map(); // username_lower -> user
+const memorySessions = new Map(); // token -> session
+const loginAttempts = new Map(); // ip -> attempt object
+const registerAttempts = new Map(); // ip -> [timestamp]
 
-function readJSON(file, fallback) {
+// ── Khởi tạo nạp dữ liệu từ PostgreSQL ──
+let isInitialized = false;
+async function initAuth() {
+  if (isInitialized) return;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8') || JSON.stringify(fallback));
+    const { query } = require('./db/pool.js');
+    // Nạp users
+    const uRes = await query(
+      `SELECT u.id, u.username, u.username_lower, u.display_name, u.password_hash, u.salt,
+              u.created_at, u.last_name_change_at, u.last_password_change_at,
+              p.avatar, p.bio, p.role
+       FROM users u
+       LEFT JOIN profiles p ON p.user_id = u.id`
+    );
+    uRes.rows.forEach(r => {
+      memoryUsers.set(r.username_lower, {
+        id: r.id,
+        username: r.username,
+        usernameLower: r.username_lower,
+        displayName: r.display_name,
+        passwordHash: r.password_hash,
+        salt: r.salt,
+        createdAt: Number(r.created_at),
+        lastNameChangeAt: Number(r.last_name_change_at || 0),
+        lastPasswordChangeAt: Number(r.last_password_change_at || 0),
+        avatar: r.avatar || '01',
+        bio: r.bio || '',
+        role: r.role || 'teacher',
+      });
+    });
+
+    // Nạp active sessions còn hạn
+    const sRes = await query(
+      `SELECT token, username, created_at, expires_at FROM user_sessions WHERE expires_at > $1`,
+      [Date.now()]
+    );
+    sRes.rows.forEach(r => {
+      memorySessions.set(r.token, {
+        username: r.username,
+        createdAt: Number(r.created_at),
+        expiresAt: Number(r.expires_at),
+      });
+    });
+
+    isInitialized = true;
+    console.log(`🔐 [Auth] Đã nạp ${memoryUsers.size} người dùng và ${memorySessions.size} phiên làm việc từ PostgreSQL!`);
   } catch (err) {
-    return fallback;
+    console.error('Lỗi nạp Auth từ PostgreSQL:', err.message);
   }
-}
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
 // ── Password hashing (scrypt, stdlib) ──
@@ -52,6 +79,7 @@ function hashPassword(password) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return { salt, hash };
 }
+
 function verifyPassword(password, salt, expectedHashHex) {
   const hash = crypto.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHashHex, 'hex');
@@ -60,12 +88,13 @@ function verifyPassword(password, salt, expectedHashHex) {
 }
 
 // ── Users ──
-function getUsers() { return readJSON(USERS_FILE, []); }
-function saveUsers(users) { writeJSON(USERS_FILE, users); }
+function getUsers() {
+  return Array.from(memoryUsers.values());
+}
 
 function findUserByUsername(username) {
   const lower = String(username || '').toLowerCase();
-  return getUsers().find(u => u.usernameLower === lower) || null;
+  return memoryUsers.get(lower) || null;
 }
 
 function validateUsername(username) {
@@ -74,6 +103,7 @@ function validateUsername(username) {
   }
   return null;
 }
+
 function validateDisplayName(name) {
   const trimmed = String(name || '').trim();
   if (!trimmed || trimmed.length > 30) {
@@ -81,6 +111,7 @@ function validateDisplayName(name) {
   }
   return null;
 }
+
 function validatePassword(password) {
   if (!password || password.length < 6) {
     return 'Mật khẩu phải có ít nhất 6 ký tự.';
@@ -90,50 +121,23 @@ function validatePassword(password) {
 
 async function createUser({ username, displayName, password }) {
   const { salt, hash } = hashPassword(password);
-  const now = Date.now();
-  const user = {
+  const user = await db.createUser({
     username,
-    usernameLower: username.toLowerCase(),
-    displayName: displayName.trim(),
-    salt,
+    displayName,
     passwordHash: hash,
-    createdAt: now,
-    lastNameChangeAt: 0,
-    lastPasswordChangeAt: 0,
-  };
-  const users = getUsers();
-  users.push(user);
-  saveUsers(users);
+    salt,
+  });
 
-  // Đồng bộ lên Supabase nếu có cấu hình
-  if (supabase.isConfigured()) {
-    try {
-      await supabase.createUser(user);
-    } catch (err) {
-      console.error('Lỗi sync user lên Supabase:', err.message);
-    }
-  }
-
+  memoryUsers.set(user.usernameLower, user);
   return user;
 }
 
 async function updateUser(username, patch) {
-  const users = getUsers();
-  const idx = users.findIndex(u => u.usernameLower === String(username).toLowerCase());
-  if (idx < 0) return null;
-  users[idx] = { ...users[idx], ...patch };
-  saveUsers(users);
-
-  // Đồng bộ lên Supabase nếu có cấu hình
-  if (supabase.isConfigured()) {
-    try {
-      await supabase.updateUser(username, patch);
-    } catch (err) {
-      console.error('Lỗi sync updateUser lên Supabase:', err.message);
-    }
+  const updated = await db.updateUser(username, patch);
+  if (updated) {
+    memoryUsers.set(updated.usernameLower, updated);
   }
-
-  return users[idx];
+  return updated;
 }
 
 function cooldownInfo(lastChangeAt, cooldownMs) {
@@ -145,51 +149,50 @@ function cooldownInfo(lastChangeAt, cooldownMs) {
   return { allowed: true, nextAllowedAt: 0 };
 }
 
-// ── Sessions ──
-function getSessions() { return readJSON(SESSIONS_FILE, {}); }
-function saveSessions(sessions) { writeJSON(SESSIONS_FILE, sessions); }
-
+// ── Sessions (PostgreSQL + Memory cache) ──
 function createSession(username) {
-  const sessions = getSessions();
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  sessions[token] = { username, createdAt: now, expiresAt: now + SESSION_TTL_MS };
-  saveSessions(sessions);
+  const expiresAt = now + SESSION_TTL_MS;
+  const sess = { username, createdAt: now, expiresAt };
+  
+  memorySessions.set(token, sess);
+  
+  // Lưu bất đồng bộ vào PostgreSQL
+  db.saveSession(token, username, expiresAt).catch(err => {
+    console.error('Lỗi lưu session vào PostgreSQL:', err.message);
+  });
+
   return token;
 }
 
 function getSession(token) {
   if (!token) return null;
-  const sessions = getSessions();
-  const session = sessions[token];
-  if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    delete sessions[token];
-    saveSessions(sessions);
+  const sess = memorySessions.get(token);
+  if (!sess) return null;
+  if (Date.now() > sess.expiresAt) {
+    memorySessions.delete(token);
+    db.deleteSession(token).catch(() => {});
     return null;
   }
-  return session;
+  return sess;
 }
 
 function deleteSession(token) {
-  const sessions = getSessions();
-  if (sessions[token]) {
-    delete sessions[token];
-    saveSessions(sessions);
+  if (memorySessions.has(token)) {
+    memorySessions.delete(token);
+    db.deleteSession(token).catch(() => {});
   }
 }
 
 function deleteOtherSessions(username, exceptToken) {
-  const sessions = getSessions();
   const lower = username.toLowerCase();
-  let changed = false;
-  for (const token of Object.keys(sessions)) {
-    if (token !== exceptToken && sessions[token].username.toLowerCase() === lower) {
-      delete sessions[token];
-      changed = true;
+  for (const [token, sess] of memorySessions.entries()) {
+    if (token !== exceptToken && sess.username.toLowerCase() === lower) {
+      memorySessions.delete(token);
     }
   }
-  if (changed) saveSessions(sessions);
+  db.deleteOtherSessions(username, exceptToken).catch(() => {});
 }
 
 // ── Cookie helpers ──
@@ -204,26 +207,25 @@ function parseCookies(header) {
   });
   return out;
 }
+
 const SESSION_COOKIE = 'mqc_session';
+
 function sessionCookieHeader(token, isSecure) {
   const secureFlag = isSecure ? '; Secure' : '';
   return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
 }
+
 function clearSessionCookieHeader(isSecure) {
   const secureFlag = isSecure ? '; Secure' : '';
   return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
 }
 
-// ── Chống spam đăng nhập (theo IP) ──
-function getLoginAttempts() { return readJSON(LOGIN_ATTEMPTS_FILE, {}); }
-function saveLoginAttempts(data) { writeJSON(LOGIN_ATTEMPTS_FILE, data); }
-
+// ── Rate-limiting chống spam đăng nhập (theo IP) ──
 function checkLoginLock(ip) {
-  const attempts = getLoginAttempts();
-  const entry = attempts[ip];
+  const entry = loginAttempts.get(ip);
   if (!entry) return { locked: false };
   const now = Date.now();
-  if (now - entry.firstFailAt > LOGIN_WINDOW_MS) return { locked: false }; // cửa sổ đã hết, coi như sạch
+  if (now - entry.firstFailAt > LOGIN_WINDOW_MS) return { locked: false };
   if (entry.lockUntil && now < entry.lockUntil) {
     return { locked: true, waitSeconds: Math.ceil((entry.lockUntil - now) / 1000) };
   }
@@ -231,9 +233,8 @@ function checkLoginLock(ip) {
 }
 
 function recordLoginFailure(ip) {
-  const attempts = getLoginAttempts();
   const now = Date.now();
-  let entry = attempts[ip];
+  let entry = loginAttempts.get(ip);
   if (!entry || now - entry.firstFailAt > LOGIN_WINDOW_MS) {
     entry = { count: 0, firstFailAt: now, lockUntil: 0 };
   }
@@ -247,8 +248,7 @@ function recordLoginFailure(ip) {
     const remaining = LOGIN_FREE_ATTEMPTS - entry.count;
     if (remaining <= 2) warning = `Sai mật khẩu. Còn ${remaining} lần thử trước khi bị tạm khóa.`;
   }
-  attempts[ip] = entry;
-  saveLoginAttempts(attempts);
+  loginAttempts.set(ip, entry);
   return {
     locked: !!entry.lockUntil,
     waitSeconds: entry.lockUntil ? Math.ceil((entry.lockUntil - now) / 1000) : 0,
@@ -257,23 +257,16 @@ function recordLoginFailure(ip) {
 }
 
 function recordLoginSuccess(ip) {
-  const attempts = getLoginAttempts();
-  if (attempts[ip]) {
-    delete attempts[ip];
-    saveLoginAttempts(attempts);
+  if (loginAttempts.has(ip)) {
+    loginAttempts.delete(ip);
   }
 }
 
 // ── Chống spam đăng ký (theo IP) ──
-function getRegisterAttempts() { return readJSON(REGISTER_ATTEMPTS_FILE, {}); }
-function saveRegisterAttempts(data) { writeJSON(REGISTER_ATTEMPTS_FILE, data); }
-
 function checkRegisterLimit(ip) {
-  const attempts = getRegisterAttempts();
   const now = Date.now();
-  const list = (attempts[ip] || []).filter(t => now - t < REGISTER_WINDOW_MS);
-  attempts[ip] = list;
-  saveRegisterAttempts(attempts);
+  const list = (registerAttempts.get(ip) || []).filter(t => now - t < REGISTER_WINDOW_MS);
+  registerAttempts.set(ip, list);
   if (list.length >= REGISTER_LIMIT) {
     return { allowed: false, retryAt: list[0] + REGISTER_WINDOW_MS };
   }
@@ -281,20 +274,17 @@ function checkRegisterLimit(ip) {
 }
 
 function recordRegister(ip) {
-  const attempts = getRegisterAttempts();
   const now = Date.now();
-  const list = (attempts[ip] || []).filter(t => now - t < REGISTER_WINDOW_MS);
+  const list = (registerAttempts.get(ip) || []).filter(t => now - t < REGISTER_WINDOW_MS);
   list.push(now);
-  attempts[ip] = list;
-  saveRegisterAttempts(attempts);
+  registerAttempts.set(ip, list);
 }
 
 function upsertUser(user) {
   if (!user || !user.username) return null;
-  const users = getUsers();
   const lower = (user.usernameLower || user.username).toLowerCase();
-  const idx = users.findIndex(u => u.usernameLower === lower);
   const normalized = {
+    id: user.id,
     username: user.username,
     usernameLower: lower,
     displayName: user.displayName || user.username,
@@ -303,17 +293,15 @@ function upsertUser(user) {
     createdAt: user.createdAt || Date.now(),
     lastNameChangeAt: user.lastNameChangeAt || 0,
     lastPasswordChangeAt: user.lastPasswordChangeAt || 0,
+    avatar: user.avatar || '01',
+    role: user.role || 'teacher',
   };
-  if (idx >= 0) {
-    users[idx] = { ...users[idx], ...normalized };
-  } else {
-    users.push(normalized);
-  }
-  saveUsers(users);
+  memoryUsers.set(lower, normalized);
   return normalized;
 }
 
 module.exports = {
+  initAuth,
   SESSION_COOKIE,
   NAME_CHANGE_COOLDOWN_MS,
   PASSWORD_CHANGE_COOLDOWN_MS,
@@ -323,7 +311,6 @@ module.exports = {
   createUser,
   updateUser,
   getUsers,
-  saveUsers,
   upsertUser,
   cooldownInfo,
   validateUsername,

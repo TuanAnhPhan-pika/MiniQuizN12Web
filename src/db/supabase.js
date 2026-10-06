@@ -364,6 +364,7 @@ async function saveHostedRoom(hostUsername, record) {
 
 module.exports = {
   isConfigured,
+  client,
   findUserByUsername,
   createUser,
   updateUser,

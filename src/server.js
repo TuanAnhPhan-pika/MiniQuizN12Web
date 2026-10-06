@@ -3,14 +3,12 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const auth = require('./auth.js');
-const supabase = require('./db/supabase.js');
+const db   = require('./db/index.js');
+const { runMigration } = require('./db/migrate.js');
+const roomsManager = require('./rooms/manager.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const STATIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
-const PRIVATE_DIR = path.join(DATA_DIR, 'private');
-const PUBLIC_DIR = path.join(DATA_DIR, 'public');
-const HISTORY_DIR = path.join(DATA_DIR, 'history');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_APP_URL = 'https://mini-quiz-classroom-n12.ai.studio';
 
@@ -21,16 +19,12 @@ function getServerLanIp() {
   
   for (const [name, list] of Object.entries(nets)) {
     const lowerName = name.toLowerCase();
-    // Bỏ qua các card mạng ảo và VPN
     if (lowerName.includes('virtual') || lowerName.includes('vpn') || lowerName.includes('wireguard') || lowerName.includes('vethernet') || lowerName.includes('radmin') || lowerName.includes('hamachi')) {
       continue;
     }
     for (const net of list) {
       if (net.family === 'IPv4' && !net.internal) {
-        // Loại trừ dải mạng ảo VirtualBox
         if (net.address.startsWith('192.168.56.')) continue;
-        
-        // Ưu tiên cao nhất: Card Wi-Fi hoặc Wireless thật
         if (lowerName.includes('wi-fi') || lowerName.includes('wifi') || lowerName.includes('wlan') || lowerName.includes('wireless')) {
           return net.address;
         }
@@ -39,237 +33,10 @@ function getServerLanIp() {
     }
   }
 
-  // Ưu tiên tiếp theo: mạng LAN gia đình/trường học 192.168.x.x
   const homeNet = candidates.find(c => c.ip.startsWith('192.168.'));
   if (homeNet) return homeNet.ip;
-
   if (candidates.length > 0) return candidates[0].ip;
-
   return '127.0.0.1';
-}
-
-// Đảm bảo thư mục lưu trữ tồn tại
-function ensureStorageDirs() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(PRIVATE_DIR)) fs.mkdirSync(PRIVATE_DIR, { recursive: true });
-  if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-  if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
-
-  const publicFile = path.join(PUBLIC_DIR, 'exams.json');
-  if (!fs.existsSync(publicFile)) {
-    fs.writeFileSync(publicFile, JSON.stringify([], null, 2), 'utf8');
-  }
-}
-ensureStorageDirs();
-
-// Helper đọc/ghi Lịch sử làm bài cho từng user
-function getUserHistoryFile(username) {
-  const safeUser = String(username || 'guest').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const userDir = path.join(HISTORY_DIR, `user_${safeUser}`);
-  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
-  const filePath = path.join(userDir, 'history.json');
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([], null, 2), 'utf8');
-  }
-  return filePath;
-}
-
-function readUserHistory(username) {
-  try {
-    const fp = getUserHistoryFile(username);
-    return JSON.parse(fs.readFileSync(fp, 'utf8') || '[]');
-  } catch (err) {
-    return [];
-  }
-}
-
-function writeUserHistory(username, historyList) {
-  const fp = getUserHistoryFile(username);
-  fs.writeFileSync(fp, JSON.stringify(historyList, null, 2), 'utf8');
-}
-
-// Helper đọc/ghi Lịch sử phòng thi đã tổ chức (tối đa 20 phòng gần nhất)
-function getHostRoomHistoryFile(username) {
-  const safeUser = String(username || 'admin').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const userDir = path.join(HISTORY_DIR, `user_${safeUser}`);
-  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
-  const filePath = path.join(userDir, 'hosted_rooms.json');
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([], null, 2), 'utf8');
-  }
-  return filePath;
-}
-
-function readHostRoomHistory(username) {
-  try {
-    const fp = getHostRoomHistoryFile(username);
-    return JSON.parse(fs.readFileSync(fp, 'utf8') || '[]');
-  } catch (err) {
-    return [];
-  }
-}
-
-function writeHostRoomHistory(username, list) {
-  const fp = getHostRoomHistoryFile(username);
-  fs.writeFileSync(fp, JSON.stringify(list, null, 2), 'utf8');
-}
-
-function calculateRoomExamStats(room) {
-  const candidates = (room.players || []).filter(p => !p.isHost);
-  const totalQuestions = (room.questions || []).length;
-  const maxPossibleScore = totalQuestions * 100;
-  const scores = candidates.map(c => Number(c.score) || 0);
-  const avgScore = candidates.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / candidates.length) : 0;
-  const maxScore = candidates.length > 0 ? Math.max(...scores) : 0;
-  const topCandidate = candidates.find(c => (Number(c.score) || 0) === maxScore);
-
-  const questionsStats = (room.questions || []).map((q, qIdx) => {
-    const answersForQ = (room.answers && room.answers[qIdx]) || {};
-    const countedIds = new Set();
-    let correctCount = 0;
-    Object.values(answersForQ).forEach(ans => {
-      const idKey = ans.playerId || ans.nick;
-      if (idKey && !countedIds.has(idKey)) {
-        countedIds.add(idKey);
-        if (ans.isCorrect) correctCount++;
-      }
-    });
-    const totalCount = candidates.length;
-    const ratioPct = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
-    return {
-      qIdx: qIdx + 1,
-      text: q.text || ('Câu ' + (qIdx + 1)),
-      correctIndex: q.correct,
-      correctText: (q.choices && q.choices[q.correct] !== undefined) ? q.choices[q.correct] : '',
-      correctCount,
-      totalCount,
-      ratioPct
-    };
-  });
-
-  const candidatesMatrix = candidates.map(c => {
-    const answersMap = [];
-    let correctCount = 0;
-    for (let qIdx = 0; qIdx < totalQuestions; qIdx++) {
-      const ans = room.answers && room.answers[qIdx] && (room.answers[qIdx][c.id] || room.answers[qIdx][c.nick]);
-      const isCorrect = ans ? !!ans.isCorrect : false;
-      if (isCorrect) correctCount++;
-      answersMap.push(isCorrect);
-    }
-    const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-    return {
-      id: c.id,
-      nick: c.nick,
-      av: c.av || '01',
-      score: Number(c.score) || 0,
-      answersMap,
-      correctCount,
-      totalQuestions,
-      ratioPct
-    };
-  });
-
-  candidatesMatrix.sort((a, b) => (b.ratioPct - a.ratioPct) || (b.score - a.score));
-
-  return {
-    totalCandidates: candidates.length,
-    capacity: Number(room.capacity) || 40,
-    avgScore,
-    maxScore,
-    maxPossibleScore,
-    topCandidateNick: topCandidate ? topCandidate.nick : '',
-    questionsStats,
-    candidatesMatrix
-  };
-}
-
-function archiveHostedRoom(username, room, stats) {
-  const hostUser = username || 'admin';
-  const list = readHostRoomHistory(hostUser);
-  const existingIdx = list.findIndex(r => r.pin === room.pin);
-  const now = room.finishedAt || Date.now();
-  const record = {
-    id: 'hosted-' + now,
-    pin: room.pin,
-    roomTitle: room.name || room.title || 'Phòng thi trực tuyến',
-    createdAt: room.createdAt || now,
-    finishedAt: now,
-    formattedTime: new Date(now).toLocaleDateString('vi-VN', {
-      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
-    }),
-    stats
-  };
-
-  if (existingIdx >= 0) {
-    list[existingIdx] = record;
-  } else {
-    list.unshift(record);
-  }
-  // Giới hạn lưu đúng 20 phòng tổ chức gần nhất
-  if (list.length > 20) {
-    list.length = 20;
-  }
-  writeHostRoomHistory(hostUser, list);
-  if (supabase.isConfigured()) {
-    supabase.saveHostedRoom(hostUser, record).catch(err => {
-      console.error('Lỗi sync hosted room lên Supabase:', err.message);
-    });
-  }
-}
-
-// Helper đọc/ghi Private Storage cho từng user
-function getUserPrivateFile(username) {
-  const safeUser = String(username || '0').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const userDir = path.join(PRIVATE_DIR, `user_${safeUser}`);
-  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
-  const filePath = path.join(userDir, 'exams.json');
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([], null, 2), 'utf8');
-  }
-  return filePath;
-}
-
-function readPrivateExams(username) {
-  try {
-    const fp = getUserPrivateFile(username);
-    return JSON.parse(fs.readFileSync(fp, 'utf8') || '[]');
-  } catch (err) {
-    return [];
-  }
-}
-
-function writePrivateExams(username, exams) {
-  const fp = getUserPrivateFile(username);
-  fs.writeFileSync(fp, JSON.stringify(exams, null, 2), 'utf8');
-  if (supabase.isConfigured() && Array.isArray(exams)) {
-    Promise.all(exams.map(e => supabase.saveExam(e, username, false))).catch(err => {
-      console.error('Lỗi sync private exams lên Supabase:', err.message);
-    });
-  }
-}
-
-// Helper đọc/ghi Public Storage
-function getPublicExamsFile() {
-  return path.join(PUBLIC_DIR, 'exams.json');
-}
-
-function readPublicExams() {
-  try {
-    const fp = getPublicExamsFile();
-    return JSON.parse(fs.readFileSync(fp, 'utf8') || '[]');
-  } catch (err) {
-    return [];
-  }
-}
-
-function writePublicExams(exams) {
-  const fp = getPublicExamsFile();
-  fs.writeFileSync(fp, JSON.stringify(exams, null, 2), 'utf8');
-  if (supabase.isConfigured() && Array.isArray(exams)) {
-    Promise.all(exams.map(e => supabase.saveExam(e, 'system', true))).catch(err => {
-      console.error('Lỗi sync public exams lên Supabase:', err.message);
-    });
-  }
 }
 
 function sortExamsByCode(exams) {
@@ -323,7 +90,7 @@ function calculateExamDiffPercent(parentExam, currentExam) {
   return maxLen > 0 ? (dist / maxLen) * 100 : 0;
 }
 
-// MIME types cho file tĩnh
+// MIME types cho static files
 const MIME = {
   '.html': 'text/html;charset=utf-8',
   '.css':  'text/css;charset=utf-8',
@@ -361,152 +128,32 @@ function readJsonBody(req) {
   });
 }
 
-// Bộ nhớ đệm các phòng thi đang mở & đồng bộ bền vững xuống đĩa
-const activeRooms = new Map();
-const roomCleanupTimers = new Map(); // Quản lý timer dọn dẹp phòng thi riêng biệt tránh circular JSON
-const ROOM_HOLD_MS = 24 * 60 * 60 * 1000;          // 24 giờ: giữ chỗ trong danh sách
-const ROOM_EXPIRE_MS = (24 * 60 + 15) * 60 * 1000; // 24 giờ 15 phút: hủy bỏ phòng
-
-const ACTIVE_ROOMS_FILE = path.join(DATA_DIR, 'active_rooms.json');
-const ACTIVE_ROOMS_TMP_FILE = path.join(DATA_DIR, 'active_rooms.json.tmp');
-
-let saveRoomsTimer = null;
-function saveActiveRooms(debounce = false) {
-  if (debounce) {
-    if (saveRoomsTimer) clearTimeout(saveRoomsTimer);
-    saveRoomsTimer = setTimeout(() => {
-      saveRoomsTimer = null;
-      writeActiveRoomsToDisk();
-    }, 200);
-    return;
-  }
-  if (saveRoomsTimer) {
-    clearTimeout(saveRoomsTimer);
-    saveRoomsTimer = null;
-  }
-  writeActiveRoomsToDisk();
-}
-
-function writeActiveRoomsToDisk() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    const list = Array.from(activeRooms.entries());
-    fs.writeFileSync(ACTIVE_ROOMS_TMP_FILE, JSON.stringify(list, null, 2), 'utf8');
-    fs.renameSync(ACTIVE_ROOMS_TMP_FILE, ACTIVE_ROOMS_FILE);
-  } catch (err) {
-    console.error('Lỗi lưu trữ active rooms xuống đĩa:', err.message);
-  }
-}
-
-function loadActiveRooms() {
-  if (!fs.existsSync(ACTIVE_ROOMS_FILE)) return;
-  try {
-    const raw = fs.readFileSync(ACTIVE_ROOMS_FILE, 'utf8');
-    if (!raw.trim()) return;
-    const entries = JSON.parse(raw);
-    const now = Date.now();
-    let changed = false;
-
-    for (const [pin, room] of entries) {
-      if (!pin || !room) continue;
-
-      // 1. Kiểm tra hạn phòng 24h15m dựa trên createdAt tuyệt đối
-      if (room.createdAt && (now - room.createdAt > ROOM_EXPIRE_MS)) {
-        changed = true;
-        continue;
-      }
-
-      // 2. Phòng đã kết thúc: 3 phút grace period
-      if (room.status === 'finished') {
-        const finishedAt = room.finishedAt || room.createdAt || now;
-        const elapsed = now - finishedAt;
-        const remainingGrace = (3 * 60 * 1000) - elapsed;
-        if (remainingGrace <= 0) {
-          changed = true;
-          continue;
-        }
-        if (roomCleanupTimers.has(pin)) clearTimeout(roomCleanupTimers.get(pin));
-        roomCleanupTimers.set(pin, setTimeout(() => {
-          activeRooms.delete(pin);
-          roomCleanupTimers.delete(pin);
-          saveActiveRooms();
-        }, remainingGrace));
-      }
-
-      // 3. Phòng đang trong giai đoạn đếm ngược (countdown 5s)
-      if (room.status === 'countdown' && room.countdownEnd && now >= room.countdownEnd) {
-        room.status = 'started';
-        changed = true;
-      }
-
-      activeRooms.set(pin, room);
-    }
-
-    if (changed) {
-      saveActiveRooms();
-    }
-  } catch (err) {
-    console.error('Lỗi nạp active rooms từ đĩa:', err.message);
-  }
-}
-
-// Nạp lại danh sách phòng đang hoạt động khi server khởi động
-loadActiveRooms();
-
-// Tự động dọn dẹp phòng thi hết hạn hoặc phòng đã tổ chức xong quá 3 phút
-function cleanupExpiredRooms() {
-  const now = Date.now();
-  let changed = false;
-  for (const [pin, room] of activeRooms.entries()) {
-    // Phòng đã tổ chức xong quá 3 phút -> Xóa giải phóng PIN
-    if (room.status === 'finished' && room.finishedAt && (now - room.finishedAt > 3 * 60 * 1000)) {
-      activeRooms.delete(pin);
-      changed = true;
-      continue;
-    }
-    // Phòng hết hạn > 24h15m
-    if (room.createdAt && (now - room.createdAt > ROOM_EXPIRE_MS)) {
-      activeRooms.delete(pin);
-      changed = true;
-    }
-  }
-  if (changed) {
-    saveActiveRooms();
-  }
-}
-setInterval(cleanupExpiredRooms, 30 * 1000); // kiểm tra dọn dẹp mỗi 30 giây
-
-// Lấy IP client (dùng cho chống spam đăng nhập/đăng ký)
-// Hỗ trợ Cloudflare, Reverse Proxy (Nginx/Caddy/ngrok) và kết nối trực tiếp
 function getClientIp(req) {
-  const cfIp = req.headers['cf-connecting-ip'];
-  if (cfIp && typeof cfIp === 'string') return cfIp.trim();
-
-  const xff = req.headers['x-forwarded-for'];
-  if (xff && typeof xff === 'string') {
-    const first = xff.split(',')[0].trim();
-    if (first) return first;
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const parts = forwarded.split(',');
+    if (parts.length > 0) {
+      const first = parts[0].trim();
+      if (first) return first;
+    }
   }
-
   const realIp = req.headers['x-real-ip'];
-  if (realIp && typeof realIp === 'string') return realIp.trim();
-
-  let ip = req.socket.remoteAddress || 'unknown';
-  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
-  return ip;
+  if (realIp && typeof realIp === 'string' && realIp.trim()) {
+    return realIp.trim();
+  }
+  return req.socket.remoteAddress || '127.0.0.1';
 }
 
-// Xác định giao thức (HTTP / HTTPS) và host công khai
 function getRequestProto(req) {
   const forwardedProto = req.headers['x-forwarded-proto'];
   if (forwardedProto && typeof forwardedProto === 'string') {
-    return forwardedProto.split(',')[0].trim();
+    return forwardedProto.split(',')[0].trim().toLowerCase();
   }
-  return req.socket.encrypted ? 'https' : 'http';
+  return 'http';
 }
 
 function getRequestHost(req) {
-  return req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+  return req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
 }
 
 // Lấy user đang đăng nhập từ cookie session; null nếu không hợp lệ
@@ -530,7 +177,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method.toUpperCase();
 
-  // CORS headers: hỗ trợ credentials cho cả Internet và LAN
+  // CORS headers
   const origin = req.headers.origin;
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
@@ -551,7 +198,7 @@ const server = http.createServer(async (req, res) => {
   // AUTH ENDPOINTS
   // ══════════════════════════════════════════════════════════
 
-  // [GET] /api/auth/check-username - Kiểm tra tài khoản tồn tại thời gian thực
+  // [GET] /api/auth/check-username
   if (method === 'GET' && pathname === '/api/auth/check-username') {
     const u = (parsedUrl.searchParams.get('u') || '').trim();
     if (!u) {
@@ -564,14 +211,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     let exists = !!auth.findUserByUsername(u);
-    if (!exists && supabase.isConfigured()) {
-      try {
-        const dbUser = await supabase.findUserByUsername(u);
-        if (dbUser) exists = true;
-      } catch (e) {
-        console.error('Lỗi check username Supabase:', e.message);
-      }
-    }
     sendJSON(res, 200, {
       exists,
       valid: !exists,
@@ -604,10 +243,7 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 400, { success: false, message: 'Xác nhận mật khẩu không khớp.' });
         return;
       }
-      let existing = auth.findUserByUsername(username);
-      if (!existing && supabase.isConfigured()) {
-        existing = await supabase.findUserByUsername(username);
-      }
+      const existing = auth.findUserByUsername(username);
       if (existing) {
         sendJSON(res, 409, { success: false, message: 'Tài khoản đã tồn tại.' });
         return;
@@ -636,22 +272,18 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readJsonBody(req);
       const { username, password } = body;
-      let user = auth.findUserByUsername(username);
-      if (!user && supabase.isConfigured()) {
-        user = await supabase.findUserByUsername(username);
-        if (user) {
-          auth.upsertUser(user);
-        }
-      }
-      const ok = user && auth.verifyPassword(password || '', user.salt, user.passwordHash);
+      const user = auth.findUserByUsername(username);
 
+      if (!user) {
+        const fail = auth.recordLoginFailure(ip);
+        sendJSON(res, 401, { success: false, message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.' });
+        return;
+      }
+
+      const ok = auth.verifyPassword(password, user.salt, user.passwordHash);
       if (!ok) {
-        const result = auth.recordLoginFailure(ip);
-        if (result.locked) {
-          sendJSON(res, 429, { success: false, message: `Sai tài khoản hoặc mật khẩu. Bạn bị tạm khóa đăng nhập trong ${result.waitSeconds} giây.` });
-        } else {
-          sendJSON(res, 401, { success: false, message: result.warning || 'Tài khoản hoặc mật khẩu không đúng.' });
-        }
+        const fail = auth.recordLoginFailure(ip);
+        sendJSON(res, 401, { success: false, message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.' });
         return;
       }
 
@@ -667,9 +299,10 @@ const server = http.createServer(async (req, res) => {
 
   // [POST] /api/auth/logout
   if (method === 'POST' && pathname === '/api/auth/logout') {
-    const cookies = auth.parseCookies(req.headers.cookie);
-    const token = cookies[auth.SESSION_COOKIE];
-    if (token) auth.deleteSession(token);
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && sessionUser.token) {
+      auth.deleteSession(sessionUser.token);
+    }
     sendJSON(res, 200, { success: true }, { 'Set-Cookie': auth.clearSessionCookieHeader(isSecure) });
     return;
   }
@@ -677,65 +310,72 @@ const server = http.createServer(async (req, res) => {
   // [GET] /api/auth/me
   if (method === 'GET' && pathname === '/api/auth/me') {
     const sessionUser = getSessionUser(req);
-    if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-    let user = auth.findUserByUsername(sessionUser.username);
-    if (!user && supabase.isConfigured()) {
-      try {
-        user = await supabase.findUserByUsername(sessionUser.username);
-        if (user) {
-          auth.upsertUser(user);
-        }
-      } catch (e) {}
+    if (!sessionUser) {
+      sendJSON(res, 200, { authenticated: false, user: null });
+      return;
     }
-    if (!user) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-    sendJSON(res, 200, { success: true, username: user.username, displayName: user.displayName });
+    const user = auth.findUserByUsername(sessionUser.username);
+    if (!user) {
+      auth.deleteSession(sessionUser.token);
+      sendJSON(res, 200, { authenticated: false, user: null }, { 'Set-Cookie': auth.clearSessionCookieHeader(isSecure) });
+      return;
+    }
+    const nameCooldown = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
+    const passCooldown = auth.cooldownInfo(user.lastPasswordChangeAt, auth.PASSWORD_CHANGE_COOLDOWN_MS);
+    sendJSON(res, 200, {
+      authenticated: true,
+      user: {
+        username: user.username,
+        displayName: user.displayName,
+        createdAt: user.createdAt,
+        avatar: user.avatar || '01',
+        role: user.role || 'teacher',
+        nameCooldown,
+        passCooldown,
+      }
+    });
     return;
   }
 
-  // [POST] /api/auth/change-profile - đổi tên hiển thị và/hoặc mật khẩu (giới hạn 1 lần/7 ngày mỗi loại)
+  // [POST] /api/auth/change-profile
   if (method === 'POST' && pathname === '/api/auth/change-profile') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
+      return;
+    }
+    const user = auth.findUserByUsername(sessionUser.username);
+    if (!user) {
+      sendJSON(res, 401, { success: false, message: 'Tài khoản không tồn tại.' });
+      return;
+    }
+
     try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-      let user = auth.findUserByUsername(sessionUser.username);
-      if (!user && supabase.isConfigured()) {
-        try {
-          user = await supabase.findUserByUsername(sessionUser.username);
-          if (user) {
-            auth.upsertUser(user);
-          }
-        } catch (e) {}
-      }
-      if (!user) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-
       const body = await readJsonBody(req);
-      const { currentPassword, newDisplayName, newPassword, confirmNewPassword } = body;
-
-      if (!auth.verifyPassword(currentPassword || '', user.salt, user.passwordHash)) {
-        sendJSON(res, 401, { success: false, message: 'Mật khẩu hiện tại không đúng.' });
-        return;
-      }
-
+      const { newDisplayName, currentPassword, newPassword, confirmNewPassword } = body;
       const patch = {};
-      const changes = {};
+      const now = Date.now();
 
-      if (newDisplayName !== undefined && newDisplayName !== null && String(newDisplayName).trim() !== '') {
-        const cd = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
-        if (!cd.allowed) {
-          sendJSON(res, 429, { success: false, message: `Bạn chỉ được đổi tên hiển thị 1 lần / 7 ngày. Có thể đổi lại vào ${new Date(cd.nextAllowedAt).toLocaleString('vi-VN')}.` });
-          return;
-        }
+      if (newDisplayName !== undefined && newDisplayName !== null && newDisplayName.trim() !== user.displayName) {
         const nameErr = auth.validateDisplayName(newDisplayName);
         if (nameErr) { sendJSON(res, 400, { success: false, message: nameErr }); return; }
-        patch.displayName = String(newDisplayName).trim();
-        patch.lastNameChangeAt = Date.now();
-        changes.displayName = true;
+        const nameCd = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
+        if (!nameCd.allowed) {
+          const daysLeft = Math.ceil((nameCd.nextAllowedAt - now) / (24 * 60 * 60 * 1000));
+          sendJSON(res, 429, { success: false, message: `Bạn chỉ có thể đổi tên hiển thị 1 lần mỗi 7 ngày. Vui lòng quay lại sau ${daysLeft} ngày.` });
+          return;
+        }
+        patch.displayName = newDisplayName.trim();
+        patch.lastNameChangeAt = now;
       }
 
       if (newPassword) {
-        const cd = auth.cooldownInfo(user.lastPasswordChangeAt, auth.PASSWORD_CHANGE_COOLDOWN_MS);
-        if (!cd.allowed) {
-          sendJSON(res, 429, { success: false, message: `Bạn chỉ được đổi mật khẩu 1 lần / 7 ngày. Có thể đổi lại vào ${new Date(cd.nextAllowedAt).toLocaleString('vi-VN')}.` });
+        if (!currentPassword) {
+          sendJSON(res, 400, { success: false, message: 'Vui lòng nhập mật khẩu hiện tại để đổi mật khẩu.' });
+          return;
+        }
+        if (!auth.verifyPassword(currentPassword, user.salt, user.passwordHash)) {
+          sendJSON(res, 400, { success: false, message: 'Mật khẩu hiện tại không chính xác.' });
           return;
         }
         const passErr = auth.validatePassword(newPassword);
@@ -744,24 +384,35 @@ const server = http.createServer(async (req, res) => {
           sendJSON(res, 400, { success: false, message: 'Xác nhận mật khẩu mới không khớp.' });
           return;
         }
+        const passCd = auth.cooldownInfo(user.lastPasswordChangeAt, auth.PASSWORD_CHANGE_COOLDOWN_MS);
+        if (!passCd.allowed) {
+          const daysLeft = Math.ceil((passCd.nextAllowedAt - now) / (24 * 60 * 60 * 1000));
+          sendJSON(res, 429, { success: false, message: `Bạn chỉ có thể đổi mật khẩu 1 lần mỗi 7 ngày. Vui lòng quay lại sau ${daysLeft} ngày.` });
+          return;
+        }
         const { salt, hash } = auth.hashPassword(newPassword);
         patch.salt = salt;
         patch.passwordHash = hash;
-        patch.lastPasswordChangeAt = Date.now();
-        changes.password = true;
+        patch.lastPasswordChangeAt = now;
       }
 
-      if (!changes.displayName && !changes.password) {
-        sendJSON(res, 400, { success: false, message: 'Không có thay đổi nào được gửi lên.' });
+      if (Object.keys(patch).length === 0) {
+        sendJSON(res, 200, { success: true, message: 'Không có thay đổi nào.' });
         return;
       }
 
       const updated = await auth.updateUser(user.username, patch);
-      if (changes.password) {
-        // Đổi mật khẩu thành công -> huỷ session ở các thiết bị khác, giữ session hiện tại.
+      if (patch.passwordHash) {
         auth.deleteOtherSessions(user.username, sessionUser.token);
       }
-      sendJSON(res, 200, { success: true, username: updated.username, displayName: updated.displayName });
+
+      sendJSON(res, 200, {
+        success: true,
+        displayName: updated.displayName,
+        nameCooldown: auth.cooldownInfo(updated.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS),
+        passCooldown: auth.cooldownInfo(updated.lastPasswordChangeAt, auth.PASSWORD_CHANGE_COOLDOWN_MS),
+        message: 'Cập nhật thông tin thành công!'
+      });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -770,82 +421,35 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ══════════════════════════════════════════════════════════
-  // HISTORY ENDPOINTS
+  // USER HISTORY ENDPOINTS (attempts & attempt_answers)
   // ══════════════════════════════════════════════════════════
 
   // [GET] /api/history - Lấy danh sách lịch sử thi của user
   if (method === 'GET' && pathname === '/api/history') {
     const sessionUser = getSessionUser(req);
-    if (!sessionUser) {
-      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
+    const username = sessionUser ? sessionUser.username : (parsedUrl.searchParams.get('username') || '');
+    if (!username) {
+      sendJSON(res, 200, { success: true, history: [] });
       return;
     }
-    let historyList = readUserHistory(sessionUser.username);
-    if ((!historyList || historyList.length === 0) && supabase.isConfigured()) {
-      try {
-        const dbHistory = await supabase.getUserHistory(sessionUser.username);
-        if (Array.isArray(dbHistory) && dbHistory.length > 0) {
-          historyList = dbHistory.map(row => ({
-            id: row.id,
-            pin: row.pin,
-            roomTitle: row.roomTitle,
-            score: row.score,
-            correctCount: row.correctCount,
-            totalQuestions: row.totalQuestions,
-            accuracyPct: row.ratioPct,
-            finishedAt: row.createdAt,
-            details: row.answersDetail
-          }));
-          writeUserHistory(sessionUser.username, historyList);
-        }
-      } catch (e) {
-        console.error('Lỗi lấy user history từ Supabase:', e.message);
-      }
+    try {
+      const history = await db.getUserAttempts(username);
+      sendJSON(res, 200, { success: true, history });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
     }
-    sendJSON(res, 200, { success: true, history: historyList });
-    return;
   }
 
   // [POST] /api/history - Ghi lại kết quả bài thi sau khi hoàn thành
   if (method === 'POST' && pathname === '/api/history') {
     try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) {
-        // Khách vãng lai thi không lưu vào tài khoản
-        sendJSON(res, 200, { success: false, guest: true, message: 'Khách thi tự do, không lưu lịch sử.' });
-        return;
-      }
-
       const body = await readJsonBody(req);
-      const record = {
-        id: 'hist-' + Date.now(),
-        pin: body.pin || '---',
-        roomTitle: body.roomTitle || 'Bài thi Mini Quiz',
-        score: Number(body.score) || 0,
-        maxScore: Number(body.maxScore) || 0,
-        correctCount: Number(body.correctCount) || 0,
-        totalQuestions: Number(body.totalQuestions) || 0,
-        rank: Number(body.rank) || 1,
-        totalPlayers: Number(body.totalPlayers) || 1,
-        accuracyPct: Number(body.accuracyPct) || 0,
-        finishedAt: Date.now(),
-        details: Array.isArray(body.details) ? body.details : []
-      };
-
-      const historyList = readUserHistory(sessionUser.username);
-      historyList.unshift(record);
-      // Giới hạn lưu tối đa 20 bài gần nhất, nếu quá 20 bài thì cắt bớt những bài cũ hơn
-      if (historyList.length > 20) {
-        historyList.length = 20;
-      }
-      writeUserHistory(sessionUser.username, historyList);
-      if (supabase.isConfigured()) {
-        supabase.appendUserHistory(sessionUser.username, record).catch(err => {
-          console.error('Lỗi sync user history lên Supabase:', err.message);
-        });
-      }
-
-      sendJSON(res, 200, { success: true, record });
+      const sessionUser = getSessionUser(req);
+      const username = sessionUser ? sessionUser.username : (body.username || 'guest');
+      const saved = await db.saveAttempt({ ...body, username });
+      sendJSON(res, 200, { success: true, historyItem: saved });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -853,40 +457,28 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // [GET] /api/history/hosted - Lấy danh sách 20 phòng thi đã tổ chức gần nhất của chủ phòng
+  // [GET] /api/history/hosted - Lấy danh sách phòng thi đã tổ chức gần nhất của chủ phòng
   if (method === 'GET' && pathname === '/api/history/hosted') {
     const sessionUser = getSessionUser(req);
-    const username = sessionUser ? sessionUser.username : 'admin';
-    let list = readHostRoomHistory(username);
-    if (list.length === 0 && username !== 'admin') {
-      list = readHostRoomHistory('admin');
+    const hostUser = sessionUser ? sessionUser.username : (parsedUrl.searchParams.get('host') || 'admin');
+    try {
+      const rooms = await db.getHostedGameSessions(hostUser);
+      sendJSON(res, 200, { success: true, rooms });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
     }
-    if ((!list || list.length === 0) && supabase.isConfigured()) {
-      try {
-        const dbRooms = await supabase.getHostedRooms(username);
-        if (Array.isArray(dbRooms) && dbRooms.length > 0) {
-          list = dbRooms;
-          writeHostRoomHistory(username, list);
-        }
-      } catch (e) {
-        console.error('Lỗi lấy hosted rooms từ Supabase:', e.message);
-      }
-    }
-    if (list.length > 20) list = list.slice(0, 20);
-    sendJSON(res, 200, { success: true, hostedRooms: list });
-    return;
   }
 
   // [POST] /api/history/hosted - Lưu phòng thi đã tổ chức vào danh sách lịch sử
   if (method === 'POST' && pathname === '/api/history/hosted') {
     try {
-      const sessionUser = getSessionUser(req);
-      const username = sessionUser ? sessionUser.username : 'admin';
       const body = await readJsonBody(req);
-      if (body && body.pin) {
-        archiveHostedRoom(username, body, body.stats);
-      }
-      sendJSON(res, 200, { success: true });
+      const sessionUser = getSessionUser(req);
+      const hostUser = sessionUser ? sessionUser.username : (body.hostUsername || 'admin');
+      const saved = await db.saveHostedGameSession(hostUser, body);
+      sendJSON(res, 200, { success: true, record: saved });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -895,220 +487,19 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ══════════════════════════════════════════════════════════
-  // REST API ENDPOINTS
+  // STORAGE ENDPOINTS (quizzes, questions, versions, options)
   // ══════════════════════════════════════════════════════════
 
-  // 1. [GET] /api/storage/private - Lấy danh sách đề trong Private Storage của user đang đăng nhập
+  // 1. [GET] /api/storage/private
   if (method === 'GET' && pathname === '/api/storage/private') {
     const sessionUser = getSessionUser(req);
-    if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-    let exams = readPrivateExams(sessionUser.username);
-    if ((!exams || exams.length === 0) && supabase.isConfigured()) {
-      try {
-        const dbExams = await supabase.getPrivateExams(sessionUser.username);
-        if (Array.isArray(dbExams) && dbExams.length > 0) {
-          exams = dbExams;
-          const fp = getUserPrivateFile(sessionUser.username);
-          fs.writeFileSync(fp, JSON.stringify(exams, null, 2), 'utf8');
-        }
-      } catch (e) {
-        console.error('Lỗi lấy private exams từ Supabase:', e.message);
-      }
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập. Vui lòng đăng nhập để xem kho đề thi cá nhân.' });
+      return;
     }
-    res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-    res.end(JSON.stringify({ success: true, user: sessionUser.username, exams }));
-    return;
-  }
-
-  // 2. [POST] /api/storage/private - Lưu hoặc cập nhật đề thi trong Private Storage của user đang đăng nhập
-  if (method === 'POST' && pathname === '/api/storage/private') {
     try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-      const body = await readJsonBody(req);
-      const user = sessionUser.username;
-      const exam = body.exam;
-
-      if (!exam || !exam.title || !Array.isArray(exam.questions)) {
-        res.writeHead(400, { 'Content-Type': 'application/json;charset=utf-8' });
-        res.end(JSON.stringify({ success: false, message: 'Dữ liệu đề thi không hợp lệ!' }));
-        return;
-      }
-
-      delete exam.pin; // Không gán sẵn PIN
-      if (!exam.code) {
-        const hex = Math.random().toString(16).substring(2, 6);
-        exam.code = '#' + hex;
-      }
-      if (!exam.id) {
-        exam.id = 'exam-' + Date.now();
-      }
-
-      let exams = readPrivateExams(user);
-      const idx = exams.findIndex(e => e.id === exam.id);
-      if (idx >= 0) {
-        exams[idx] = exam;
-      } else {
-        exams.unshift(exam);
-      }
-      writePrivateExams(user, exams);
-
-      res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: true, exam, total: exams.length }));
-      return;
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: err.message }));
-      return;
-    }
-  }
-
-  // 3. [DELETE] /api/storage/private/:id - Xóa đề thi khỏi Private Storage của user đang đăng nhập
-  if (method === 'DELETE' && pathname.startsWith('/api/storage/private/')) {
-    const sessionUser = getSessionUser(req);
-    if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-    const examId = pathname.replace('/api/storage/private/', '');
-    const user = sessionUser.username;
-    let exams = readPrivateExams(user);
-    const prevLen = exams.length;
-    exams = exams.filter(e => e.id !== examId);
-    writePrivateExams(user, exams);
-    if (supabase.isConfigured()) {
-      supabase.deleteExam(examId).catch(err => {
-        console.error('Lỗi delete exam Supabase:', err.message);
-      });
-    }
-
-    res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-    res.end(JSON.stringify({ success: true, deleted: prevLen > exams.length }));
-    return;
-  }
-
-  // 4. [GET] /api/storage/public - Lấy danh sách đề thi dùng chung trong Public Storage
-  if (method === 'GET' && pathname === '/api/storage/public') {
-    let rawExams = readPublicExams();
-    if ((!rawExams || rawExams.length === 0) && supabase.isConfigured()) {
-      try {
-        const dbExams = await supabase.getPublicExams();
-        if (Array.isArray(dbExams) && dbExams.length > 0) {
-          rawExams = dbExams;
-          writePublicExams(rawExams);
-        }
-      } catch (e) {
-        console.error('Lỗi lấy public exams từ Supabase:', e.message);
-      }
-    }
-    let exams = sortExamsByCode(rawExams);
-    const q = (parsedUrl.searchParams.get('q') || '').toLowerCase().trim();
-    if (q) {
-      const cleanQ = q.startsWith('#') ? q.substring(1) : q;
-      exams = exams.filter(e => {
-        const subj = (e.subject || '').toLowerCase();
-        const title = (e.title || '').toLowerCase();
-        const code = (e.code || '').toLowerCase();
-        const cleanCode = code.startsWith('#') ? code.substring(1) : code;
-        const matchCode = code.includes(q) || (cleanQ && cleanCode.includes(cleanQ));
-        return subj.includes(q) || title.includes(q) || matchCode;
-      });
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-    res.end(JSON.stringify({ success: true, exams }));
-    return;
-  }
-
-  // 5. [POST] /api/storage/public/share - Chia sẻ đề thi cá nhân lên Public Storage
-  if (method === 'POST' && pathname === '/api/storage/public/share') {
-    try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-      const body = await readJsonBody(req);
-      const user = sessionUser.username;
-      const exam = body.exam;
-
-      if (!exam || !exam.title || !Array.isArray(exam.questions)) {
-        res.writeHead(400, { 'Content-Type': 'application/json;charset=utf-8' });
-        res.end(JSON.stringify({ success: false, message: 'Dữ liệu đề thi không hợp lệ!' }));
-        return;
-      }
-
-      let publicExams = readPublicExams();
-
-      // Kiểm tra đề có hậu tố -N (được tải xuống từ ngân hàng)
-      const examCode = String(exam.code || '').trim();
-      const lastDashIdx = examCode.lastIndexOf('-');
-      if (lastDashIdx !== -1) {
-        const parentCode = examCode.substring(0, lastDashIdx);
-        const parentExam = publicExams.find(e => e.code === parentCode);
-        if (parentExam) {
-          const diffPercent = calculateExamDiffPercent(parentExam, exam);
-          if (diffPercent < 10) {
-            sendJSON(res, 400, {
-              success: false,
-              message: `Đề thi này là bản sao của "${parentExam.title}" (${parentCode}). Bạn cần chỉnh sửa nội dung khác biệt ít nhất 10% so với bản gốc mới có thể chia sẻ lên Ngân hàng!`
-            });
-            return;
-          }
-        }
-      }
-
-      const sharedExam = JSON.parse(JSON.stringify(exam));
-      delete sharedExam.pin;
-      sharedExam.sharedBy = user;
-      const userRecord = auth.findUserByUsername(sessionUser.username);
-      sharedExam.author = (userRecord && userRecord.displayName) ? userRecord.displayName : (exam.author || user);
-      if (exam.desc !== undefined) {
-        sharedExam.desc = String(exam.desc).trim();
-      }
-      sharedExam.sharedAt = new Date().toLocaleDateString('vi-VN');
-
-      // Cập nhật nếu đã có cùng id, hoặc thêm mới
-      const idx = publicExams.findIndex(e => e.id === sharedExam.id || (e.code && e.code === sharedExam.code));
-      if (idx >= 0) {
-        publicExams[idx] = sharedExam;
-      } else {
-        publicExams.unshift(sharedExam);
-      }
-      writePublicExams(publicExams);
-
-      res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: true, exam: sharedExam }));
-      return;
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: err.message }));
-      return;
-    }
-  }
-
-  // [DELETE] /api/storage/public/:id - Gỡ đề thi khỏi Public Storage
-  if (method === 'DELETE' && pathname.startsWith('/api/storage/public/')) {
-    try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-      const examId = pathname.replace('/api/storage/public/', '');
-      let publicExams = readPublicExams();
-      const targetExam = publicExams.find(e => e.id === examId || e.code === examId);
-      if (!targetExam) {
-        sendJSON(res, 404, { success: false, message: 'Đề thi không tồn tại trong ngân hàng!' });
-        return;
-      }
-
-      // Chỉ cho phép người đã chia sẻ hoặc admin gỡ đề
-      const sharedBy = (targetExam.sharedBy || '').toLowerCase();
-      const currentUser = sessionUser.username.toLowerCase();
-      if (sharedBy && sharedBy !== currentUser && currentUser !== 'admin') {
-        sendJSON(res, 403, { success: false, message: 'Bạn không có quyền gỡ đề thi này!' });
-        return;
-      }
-
-      publicExams = publicExams.filter(e => e.id !== targetExam.id && (!targetExam.code || e.code !== targetExam.code));
-      writePublicExams(publicExams);
-      if (supabase.isConfigured()) {
-        supabase.deleteExam(targetExam.id).catch(err => {
-          console.error('Lỗi xóa public exam trên Supabase:', err.message);
-        });
-      }
-      sendJSON(res, 200, { success: true, message: 'Đã gỡ đề thi khỏi ngân hàng thành công!' });
+      const exams = await db.getPrivateQuizzes(sessionUser.username);
+      sendJSON(res, 200, { success: true, exams: sortExamsByCode(exams) });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -1116,169 +507,294 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 6. [POST] /api/storage/public/save-to-private - Lưu đề từ Public Storage vào Private Storage của user
-  if (method === 'POST' && pathname === '/api/storage/public/save-to-private') {
+  // 2. [POST] /api/storage/private
+  if (method === 'POST' && pathname === '/api/storage/private') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập. Vui lòng đăng nhập để lưu đề thi vào kho cá nhân.' });
+      return;
+    }
     try {
-      const sessionUser = getSessionUser(req);
-      if (!sessionUser) { sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' }); return; }
-      const body = await readJsonBody(req);
-      const user = sessionUser.username;
-      const publicExamId = body.examId;
-
-      const publicExams = readPublicExams();
-      const targetExam = publicExams.find(e => e.id === publicExamId || e.code === publicExamId);
-
-      if (!targetExam) {
-        res.writeHead(404, { 'Content-Type': 'application/json;charset=utf-8' });
-        res.end(JSON.stringify({ success: false, message: 'Không tìm thấy đề thi trong Public Storage!' }));
+      const examData = await readJsonBody(req);
+      if (!examData || !examData.title) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
         return;
       }
-
-      // Cập nhật số bản sao đã phát hành của đề trên ngân hàng
-      targetExam.copiesIssued = (targetExam.copiesIssued || 0) + 1;
-      writePublicExams(publicExams);
-
-      // Tạo bản sao lưu vào private storage của user
-      const cloned = JSON.parse(JSON.stringify(targetExam));
-      cloned.id = 'exam-' + Date.now();
-      cloned.code = `${targetExam.code}-${targetExam.copiesIssued}`;
-      cloned.parentCode = targetExam.code;
-      cloned.createdAt = new Date().toLocaleDateString('vi-VN');
-      delete cloned.pin;
-      delete cloned.copiesIssued;
-
-      let privateExams = readPrivateExams(user);
-      privateExams.unshift(cloned);
-      writePrivateExams(user, privateExams);
-
-      res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: true, exam: cloned }));
+      const saved = await db.saveQuiz(examData, sessionUser.username, false);
+      sendJSON(res, 200, { success: true, exam: saved });
       return;
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: err.message }));
+      sendJSON(res, 500, { success: false, message: err.message });
       return;
     }
   }
 
-  // 7. [POST] /api/rooms - Đăng ký phòng thi hoạt động
+  // 3. [DELETE] /api/storage/private/:id
+  if (method === 'DELETE' && pathname.startsWith('/api/storage/private/')) {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
+      return;
+    }
+    const examId = pathname.replace('/api/storage/private/', '');
+    try {
+      const deleted = await db.deleteQuiz(examId, sessionUser.username);
+      sendJSON(res, 200, { success: deleted });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
+  // 4. [GET] /api/storage/public
+  if (method === 'GET' && pathname === '/api/storage/public') {
+    try {
+      const exams = await db.getPublicQuizzes();
+      sendJSON(res, 200, { success: true, exams: sortExamsByCode(exams) });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
+  // 5. [POST] /api/storage/public/share
+  if (method === 'POST' && pathname === '/api/storage/public/share') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập. Vui lòng đăng nhập để chia sẻ đề thi.' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const incomingExam = body.exam || body;
+      if (!incomingExam || !incomingExam.title) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
+        return;
+      }
+
+      const publicExams = await db.getPublicQuizzes();
+      let parentCode = incomingExam.parentCode || incomingExam.code || '';
+      let parentExam = publicExams.find(e => e.code === parentCode);
+
+      if (parentExam) {
+        const diffPercent = calculateExamDiffPercent(parentExam, incomingExam);
+        if (diffPercent < 5) {
+          sendJSON(res, 200, {
+            success: true,
+            isOriginal: true,
+            diffPercent: Math.round(diffPercent * 10) / 10,
+            shareCode: parentExam.code,
+            exam: parentExam,
+            message: `Nội dung giống ${100 - Math.round(diffPercent)}% đề gốc. Hệ thống dùng lại mã chia sẻ cũ!`
+          });
+          return;
+        }
+      }
+
+      // Đề mới hoặc có chỉnh sửa trên 5%
+      let baseCode = incomingExam.code ? incomingExam.code.replace(/^#/, '') : Math.random().toString(16).slice(2, 6);
+      let newCode = `#${baseCode}`;
+      if (publicExams.some(e => e.code === newCode)) {
+        newCode = `#${baseCode}-${Date.now().toString().slice(-4)}`;
+      }
+
+      const sharedExam = {
+        ...incomingExam,
+        id: `exam-${Date.now()}`,
+        code: newCode,
+        isPublic: true,
+        parentCode: parentCode,
+        copiesIssued: 0,
+        sharedBy: sessionUser.username,
+        sharedAt: new Date().toISOString(),
+      };
+
+      const saved = await db.saveQuiz(sharedExam, 'system', true);
+      sendJSON(res, 200, {
+        success: true,
+        isOriginal: false,
+        shareCode: saved.code,
+        exam: saved,
+        message: 'Đã xuất bản đề thi lên kho công khai thành công!'
+      });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
+  // 6. [DELETE] /api/storage/public/:id
+  if (method === 'DELETE' && pathname.startsWith('/api/storage/public/')) {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
+      return;
+    }
+    const examId = pathname.replace('/api/storage/public/', '');
+    try {
+      const deleted = await db.deleteQuiz(examId, sessionUser.username);
+      sendJSON(res, 200, { success: deleted });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
+  // 7. [POST] /api/storage/public/save-to-private
+  if (method === 'POST' && pathname === '/api/storage/public/save-to-private') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập. Vui lòng đăng nhập để lưu đề về máy.' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const examId = body.id || body.examId;
+      const targetExam = await db.getQuizById(examId);
+
+      if (!targetExam) {
+        sendJSON(res, 404, { success: false, message: 'Không tìm thấy đề thi trong kho công khai!' });
+        return;
+      }
+
+      // Tăng số bản sao phát hành của đề gốc
+      targetExam.copiesIssued = (targetExam.copiesIssued || 0) + 1;
+      await db.saveQuiz(targetExam, 'system', true);
+
+      // Tạo bản sao cho Private Storage của giáo viên
+      const newPrivateExam = {
+        ...targetExam,
+        id: `exam-${Date.now()}`,
+        code: `#${Math.random().toString(16).slice(2, 6)}`,
+        parentCode: targetExam.code,
+        copiesIssued: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const saved = await db.saveQuiz(newPrivateExam, sessionUser.username, false);
+      sendJSON(res, 200, {
+        success: true,
+        exam: saved,
+        message: 'Đã lưu đề thi vào kho cá nhân thành công!'
+      });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // MULTIPLAYER ROOM ENDPOINTS
+  // ══════════════════════════════════════════════════════════
+
+  // [POST] /api/rooms - Tạo phòng thi
   if (method === 'POST' && pathname === '/api/rooms') {
     try {
       const body = await readJsonBody(req);
-      if (!body.pin || !body.questions) {
-        res.writeHead(400, { 'Content-Type': 'application/json;charset=utf-8' });
-        res.end(JSON.stringify({ success: false, message: 'Thiếu thông tin phòng thi!' }));
-        return;
-      }
       const sessionUser = getSessionUser(req);
-      body.hostUser = (sessionUser && sessionUser.username) || body.hostUser || 'admin';
-      body.createdAt = body.createdAt || Date.now();
-      body.capacity = Number(body.capacity) || 40;
-      body.isLocked = !!body.isLocked;
-      body.players = body.players || [];
-      activeRooms.set(body.pin, body);
-      saveActiveRooms();
-      res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: true, room: body }));
+      const hostUsername = sessionUser ? sessionUser.username : (body.host || 'admin');
+
+      let exam = body.exam || {};
+      if (body.examId && (!exam.questions || exam.questions.length === 0)) {
+        const found = await db.getQuizById(body.examId);
+        if (found) exam = found;
+      }
+
+      const room = await roomsManager.createRoom({
+        hostUsername,
+        exam,
+        capacity: body.capacity || 40,
+        isLocked: !!body.isLocked,
+        title: body.title || exam.title || 'Phòng thi trực tuyến'
+      });
+
+      sendJSON(res, 200, { success: true, room });
       return;
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: err.message }));
+      sendJSON(res, 500, { success: false, message: err.message });
       return;
     }
   }
 
-  // 8. [GET] /api/rooms/:pin - Lấy dữ liệu phòng thi theo mã PIN
+  // [GET] /api/rooms/:pin - Lấy dữ liệu phòng thi theo mã PIN
   if (method === 'GET' && pathname.startsWith('/api/rooms/')) {
-    cleanupExpiredRooms();
     const cleanPath = pathname.replace('/api/rooms/', '');
     const parts = cleanPath.split('/');
     const pin = parts[0];
     const subAction = parts[1] || '';
 
-    const room = activeRooms.get(pin);
-    if (!room) {
-      res.writeHead(404, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' }));
+    const sessionUser = getSessionUser(req);
+    const rawRoom = roomsManager.getRawRoom(pin);
+    if (!rawRoom) {
+      sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
       return;
     }
 
-    if (room.createdAt && (Date.now() - room.createdAt > ROOM_EXPIRE_MS)) {
-      activeRooms.delete(pin);
-      saveActiveRooms();
-      res.writeHead(404, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({ success: false, message: 'Phòng thi đã hết hạn và bị hủy!' }));
-      return;
-    }
+    const isHost = sessionUser && (sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase());
 
-    // Kiểm tra nhanh điều kiện vào phòng (khóa phòng / số lượng người tối đa)
+    // Kiểm tra nhanh điều kiện vào phòng
     if (parsedUrl.searchParams.get('check') === '1') {
-      if (room.isLocked) {
+      if (rawRoom.isLocked) {
         sendJSON(res, 200, { success: false, locked: true, message: 'Phòng thi đang khóa, không thể vào' });
         return;
       }
-      const currentPlayersCount = (room.players || []).length;
-      const maxCap = Number(room.capacity) || 40;
-      if (currentPlayersCount >= maxCap) {
+      const currentCandidates = (rawRoom.players || []).filter(p => !p.isHost).length;
+      if (currentCandidates >= rawRoom.capacity) {
         sendJSON(res, 200, { success: false, full: true, message: 'Phòng không còn chỗ trống' });
         return;
       }
-      sendJSON(res, 200, { success: true, room });
+      const safeRoom = roomsManager.getRoomForClient(pin, isHost);
+      sendJSON(res, 200, { success: true, room: safeRoom });
       return;
     }
 
-    // [GET] /api/rooms/:pin/status - Lấy trạng thái phòng chờ và danh sách người chơi
+    // [GET] /api/rooms/:pin/status
     if (subAction === 'status') {
-      let currentStatus = room.status || 'waiting';
+      let currentStatus = rawRoom.status || 'waiting';
       let remainingSec = 0;
       if (currentStatus === 'countdown') {
-        const diffMs = (room.countdownEnd || 0) - Date.now();
+        const diffMs = (rawRoom.countdownEnd || 0) - Date.now();
         if (diffMs <= 0) {
-          room.status = 'started';
+          rawRoom.status = 'started';
           currentStatus = 'started';
         } else {
           remainingSec = Math.max(1, Math.ceil(diffMs / 1000));
         }
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-      res.end(JSON.stringify({
+      sendJSON(res, 200, {
         success: true,
         status: currentStatus,
         countdown: remainingSec,
-        title: room.title,
-        pin: room.pin,
-        isLocked: !!room.isLocked,
-        capacity: Number(room.capacity) || 40,
-        players: room.players || []
-      }));
+        title: rawRoom.title,
+        pin: rawRoom.pin,
+        isLocked: !!rawRoom.isLocked,
+        capacity: rawRoom.capacity,
+        players: rawRoom.players || []
+      });
       return;
     }
 
-    // [GET] /api/rooms/:pin/leaderboard - Lấy bảng xếp hạng điểm thi thời gian thực
+    // [GET] /api/rooms/:pin/leaderboard
     if (subAction === 'leaderboard') {
-      const leaderboard = (room.players || [])
-        .filter(p => !p.isHost)
-        .map(p => ({
-          id: p.id,
-          nick: p.nick,
-          av: p.av || '01',
-          score: Number(p.score) || 0,
-          currentQ: Number(p.currentQ) || 0,
-          lastUpdated: p.lastUpdated || 0
-        }))
-        .sort((a, b) => (b.score - a.score) || (a.lastUpdated - b.lastUpdated));
+      const leaderboard = roomsManager.getLeaderboard(pin);
       sendJSON(res, 200, { success: true, leaderboard });
       return;
     }
 
-    // [GET] /api/rooms/:pin/question-stats - Thống kê số lượng thí sinh chọn A/B/C/D realtime
+    // [GET] /api/rooms/:pin/question-stats
     if (subAction === 'question-stats') {
       const q = Number(parsedUrl.searchParams.get('q')) || 0;
-      const question = (room.questions && room.questions[q]) || null;
+      const question = (rawRoom.questions && rawRoom.questions[q]) || null;
       const choicesLen = (question && Array.isArray(question.choices)) ? question.choices.length : 4;
       const choicesCount = new Array(choicesLen).fill(0);
-      const answersForQ = (room.answers && room.answers[q]) || {};
+      const answersForQ = (rawRoom.answers && rawRoom.answers[q]) || {};
 
       const countedIds = new Set();
       Object.values(answersForQ).forEach(ans => {
@@ -1291,533 +807,170 @@ const server = http.createServer(async (req, res) => {
         }
       });
 
-      const totalCandidates = (room.players || []).filter(p => !p.isHost).length;
-      const allAnswered = totalCandidates > 0 && countedIds.size >= totalCandidates;
+      const totalCandidates = (rawRoom.players || []).filter(p => !p.isHost).length;
       sendJSON(res, 200, {
         success: true,
         q,
         choicesCount,
         totalAnswered: countedIds.size,
         totalCandidates,
-        allAnswered
+        allAnswered: totalCandidates > 0 && countedIds.size >= totalCandidates
       });
       return;
     }
 
-    // [GET] /api/rooms/:pin/state - Lấy trạng thái câu hỏi và giai đoạn luồng thi lockstep
+    // [GET] /api/rooms/:pin/state
     if (subAction === 'state') {
-      const candidates = (room.players || []).filter(p => !p.isHost);
+      const candidates = (rawRoom.players || []).filter(p => !p.isHost);
       const totalCandidates = candidates.length;
-      const q = typeof room.currentQ === 'number' ? room.currentQ : 0;
-      const currentAnswers = (room.answers && room.answers[q]) || {};
+      const q = typeof rawRoom.currentQ === 'number' ? rawRoom.currentQ : 0;
+      const currentAnswers = (rawRoom.answers && rawRoom.answers[q]) || {};
       const countedIds = new Set();
       Object.values(currentAnswers).forEach(ans => {
         const idKey = ans.playerId || ans.nick;
         if (idKey) countedIds.add(idKey);
       });
       const answeredCount = countedIds.size;
-      const allAnswered = totalCandidates > 0 && answeredCount >= totalCandidates;
 
       sendJSON(res, 200, {
         success: true,
-        status: room.status || 'waiting',
+        status: rawRoom.status || 'waiting',
         currentQ: q,
-        phase: room.phase || 'question',
-        allAnswered,
+        phase: rawRoom.phase || 'question',
+        allAnswered: totalCandidates > 0 && answeredCount >= totalCandidates,
         totalAnswered: answeredCount,
         totalCandidates,
-        totalQuestions: (room.questions || []).length,
-        phaseStartedAt: room.phaseStartedAt || 0
+        totalQuestions: (rawRoom.questions || []).length,
+        phaseStartedAt: rawRoom.phaseStartedAt || 0
       });
       return;
     }
 
-    // [GET] /api/rooms/:pin/exam-stats - Số liệu thống kê tổng kết đề thi toàn diện
+    // [GET] /api/rooms/:pin/exam-stats
     if (subAction === 'exam-stats') {
-      const candidates = (room.players || []).filter(p => !p.isHost);
-      const totalQuestions = (room.questions || []).length;
-      const maxPossibleScore = totalQuestions * 100;
-      const scores = candidates.map(c => Number(c.score) || 0);
-      const avgScore = candidates.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / candidates.length) : 0;
-      const maxScore = candidates.length > 0 ? Math.max(...scores) : 0;
-      const topCandidate = candidates.find(c => (Number(c.score) || 0) === maxScore);
-
-      // 1. Thống kê theo từng câu hỏi (dạng kéo)
-      const questionsStats = (room.questions || []).map((q, qIdx) => {
-        const answersForQ = (room.answers && room.answers[qIdx]) || {};
-        const countedIds = new Set();
-        let correctCount = 0;
-        Object.values(answersForQ).forEach(ans => {
-          const idKey = ans.playerId || ans.nick;
-          if (idKey && !countedIds.has(idKey)) {
-            countedIds.add(idKey);
-            if (ans.isCorrect) correctCount++;
-          }
-        });
-        const totalCount = candidates.length;
-        const ratioPct = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
-        return {
-          qIdx: qIdx + 1,
-          text: q.text || ('Câu ' + (qIdx + 1)),
-          correctIndex: q.correct,
-          correctText: (q.choices && q.choices[q.correct] !== undefined) ? q.choices[q.correct] : '',
-          correctCount,
-          totalCount,
-          ratioPct
-        };
-      });
-
-      // 2. Ma trận kết quả chi tiết từng thí sinh (kéo dọc và kéo ngang)
-      const candidatesMatrix = candidates.map(c => {
-        const answersMap = [];
-        let correctCount = 0;
-        for (let qIdx = 0; qIdx < totalQuestions; qIdx++) {
-          const ans = room.answers && room.answers[qIdx] && (room.answers[qIdx][c.id] || room.answers[qIdx][c.nick]);
-          const isCorrect = ans ? !!ans.isCorrect : false;
-          if (isCorrect) correctCount++;
-          answersMap.push(isCorrect);
-        }
-        const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-        return {
-          id: c.id,
-          nick: c.nick,
-          av: c.av || '01',
-          score: Number(c.score) || 0,
-          answersMap,
-          correctCount,
-          totalQuestions,
-          ratioPct
-        };
-      });
-
-      // Sắp xếp ma trận theo điểm số cao nhất lên đầu
-      candidatesMatrix.sort((a, b) => b.score - a.score);
-
-      sendJSON(res, 200, {
-        success: true,
-        stats: {
-          totalCandidates: candidates.length,
-          capacity: Number(room.capacity) || 40,
-          avgScore,
-          maxScore,
-          maxPossibleScore,
-          topCandidateNick: topCandidate ? topCandidate.nick : '',
-          questionsStats,
-          candidatesMatrix
-        }
-      });
+      const stats = roomsManager.calculateExamStats(rawRoom);
+      sendJSON(res, 200, { success: true, stats });
       return;
     }
 
-    // [GET] /api/rooms/:pin - Lấy thông tin chi tiết phòng
-    res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-    res.end(JSON.stringify({ success: true, room }));
+    // [GET] /api/rooms/:pin (Phục vụ thông tin phòng - bảo mật sanitized)
+    const clientRoom = roomsManager.getRoomForClient(pin, isHost);
+    sendJSON(res, 200, { success: true, room: clientRoom });
     return;
   }
 
-  // 9. [POST] /api/rooms/:pin/leave - Rời khỏi phòng chờ (thu hồi chỗ và cập nhật danh sách)
+  // [POST] /api/rooms/:pin/leave
   if (method === 'POST' && pathname.includes('/leave')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/leave$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 200, { success: true, message: 'Phòng không tồn tại' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      const playerId = body.id || body.playerId;
-      const nick = body.nick;
-
-      if (room.players && Array.isArray(room.players)) {
-        room.players = room.players.filter(p => {
-          if (playerId && p.id === playerId) return false;
-          if (!playerId && nick && p.nick === nick) return false;
-          return true;
-        });
-      }
-      saveActiveRooms(true);
-
-      sendJSON(res, 200, {
-        success: true,
-        playersCount: (room.players || []).length,
-        players: room.players || []
-      });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/leave$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    roomsManager.removePlayer(pin, { id: body.id, nick: body.nick });
+    sendJSON(res, 200, { success: true });
+    return;
   }
 
-  // 10. [POST] /api/rooms/:pin/join - Tham gia vào phòng chờ
+  // [POST] /api/rooms/:pin/join
   if (method === 'POST' && pathname.includes('/join')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const sessionUser = getSessionUser(req);
+    const rawRoom = roomsManager.getRawRoom(pin);
+    const isHost = sessionUser && rawRoom && (sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase());
 
-      // Kiểm tra khóa phòng
-      if (room.isLocked) {
-        sendJSON(res, 403, { success: false, locked: true, message: 'Phòng thi đang khóa, không thể vào' });
-        return;
-      }
+    const result = roomsManager.addPlayer(pin, {
+      id: body.id,
+      nick: body.nick || (sessionUser ? sessionUser.username : 'Thí sinh'),
+      av: body.av || '01',
+      isHost: !!isHost,
+    });
 
-      const body = await readJsonBody(req);
-      room.players = room.players || [];
-
-      const playerObj = {
-        id: body.id || ('p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)),
-        nick: String(body.nick || 'Khách').trim().slice(0, 25),
-        av: String(body.av || '01'),
-        isHost: !!body.isHost,
-        joinedAt: Date.now()
-      };
-
-      const existingIndex = room.players.findIndex(p => p.id === playerObj.id || (p.nick.toLowerCase() === playerObj.nick.toLowerCase() && p.isHost === playerObj.isHost));
-      
-      // Kiểm tra sức chứa tối đa nếu là người chơi mới
-      const maxCapacity = Number(room.capacity) || 40;
-      if (existingIndex < 0 && room.players.length >= maxCapacity) {
-        sendJSON(res, 403, { success: false, full: true, message: 'Phòng không còn chỗ trống' });
-        return;
-      }
-
-      if (existingIndex >= 0) {
-        room.players[existingIndex] = { ...room.players[existingIndex], ...playerObj };
-      } else {
-        room.players.push(playerObj);
-      }
-      saveActiveRooms(true);
-
-      sendJSON(res, 200, {
-        success: true,
-        player: playerObj,
-        status: room.status || 'waiting',
-        isLocked: !!room.isLocked,
-        capacity: maxCapacity,
-        players: room.players,
-        title: room.title
-      });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+    if (!result.success) {
+      sendJSON(res, 200, result);
       return;
     }
+
+    sendJSON(res, 200, {
+      success: true,
+      player: result.player,
+      room: roomsManager.getRoomForClient(pin, isHost)
+    });
+    return;
   }
 
-  // [POST] /api/rooms/:pin/advance - Chủ phòng điều khiển luồng chuyển câu/bảng xếp hạng lockstep
+  // [POST] /api/rooms/:pin/advance
   if (method === 'POST' && pathname.includes('/advance')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/advance$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      const action = body.action || 'next-question';
-      const now = Date.now();
-
-      if (action === 'set-question') {
-        room.currentQ = Number(body.qIdx) || 0;
-        room.phase = 'question';
-        room.phaseStartedAt = now;
-      } else if (action === 'leaderboard') {
-        room.phase = 'leaderboard';
-        if (typeof body.qIdx === 'number') room.currentQ = body.qIdx;
-        room.phaseStartedAt = now;
-      } else if (action === 'next-question') {
-        const totalQ = (room.questions || []).length;
-        const nextQ = (typeof room.currentQ === 'number' ? room.currentQ : 0) + 1;
-        if (nextQ < totalQ) {
-          room.currentQ = nextQ;
-          room.phase = 'question';
-        } else {
-          room.currentQ = totalQ;
-          room.phase = 'finished';
-          room.status = 'finished';
-          room.isLocked = true; // Giữ nguyên trạng thái khóa
-          room.finishedAt = now;
-
-          // Lưu trữ 20 phòng thi đã tổ chức gần nhất
-          const stats = calculateRoomExamStats(room);
-          const sessionUser = getSessionUser(req);
-          const hostUser = (sessionUser && sessionUser.username) || room.hostUser || 'admin';
-          archiveHostedRoom(hostUser, room, stats);
-
-          // Khóa trong 3 phút rồi giải phóng mã PIN
-          if (roomCleanupTimers.has(pin)) clearTimeout(roomCleanupTimers.get(pin));
-          roomCleanupTimers.set(pin, setTimeout(() => {
-            activeRooms.delete(pin);
-            roomCleanupTimers.delete(pin);
-          }, 3 * 60 * 1000));
-        }
-        room.phaseStartedAt = now;
-      } else if (action === 'finish') {
-        room.phase = 'finished';
-        room.status = 'finished';
-        room.isLocked = true; // Giữ nguyên trạng thái khóa
-        room.finishedAt = now;
-
-        // Lưu trữ 20 phòng thi đã tổ chức gần nhất
-        const stats = calculateRoomExamStats(room);
-        const sessionUser = getSessionUser(req);
-        const hostUser = (sessionUser && sessionUser.username) || room.hostUser || 'admin';
-        archiveHostedRoom(hostUser, room, stats);
-
-        // Khóa trong 3 phút rồi giải phóng mã PIN
-        if (roomCleanupTimers.has(pin)) clearTimeout(roomCleanupTimers.get(pin));
-        roomCleanupTimers.set(pin, setTimeout(() => {
-          activeRooms.delete(pin);
-          roomCleanupTimers.delete(pin);
-        }, 3 * 60 * 1000));
-
-        room.phaseStartedAt = now;
-      }
-
-      saveActiveRooms();
-
-      sendJSON(res, 200, {
-        success: true,
-        currentQ: room.currentQ,
-        phase: room.phase,
-        phaseStartedAt: room.phaseStartedAt
-      });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/advance$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const ok = roomsManager.advanceQuestion(pin, Number(body.nextQ) || 0, body.phase || 'question');
+    sendJSON(res, 200, { success: ok });
+    return;
   }
 
-  // [POST] /api/rooms/:pin/answer - Thí sinh gửi lựa chọn đáp án thời gian thực (để host theo dõi)
+  // [POST] /api/rooms/:pin/answer - Server-authoritative answer checking & scoring
   if (method === 'POST' && pathname.includes('/answer')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/answer$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      const playerId = body.id || body.playerId;
-      const nick = String(body.nick || 'Thí sinh').trim();
-      const qIdx = Number(body.qIdx) || 0;
-      const choice = Number(body.choice);
-
-      room.answers = room.answers || {};
-      room.answers[qIdx] = room.answers[qIdx] || {};
-
-      const question = (room.questions && room.questions[qIdx]) || null;
-      const isCorrect = question ? (question.correct === choice) : false;
-
-      const record = {
-        playerId,
-        nick,
-        choice,
-        isCorrect,
-        answeredAt: Date.now()
-      };
-
-      if (playerId) room.answers[qIdx][playerId] = record;
-      if (nick) room.answers[qIdx][nick] = record;
-
-      saveActiveRooms(true);
-
-      sendJSON(res, 200, { success: true, qIdx, choice, isCorrect });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/answer$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const result = roomsManager.submitAnswer(pin, {
+      playerId: body.id || body.playerId,
+      nick: body.nick,
+      qIdx: Number(body.qIdx) || 0,
+      choice: Number(body.choice),
+      responseTimeMs: Number(body.responseTimeMs) || 0
+    });
+    sendJSON(res, 200, result);
+    return;
   }
 
-  // [POST] /api/rooms/:pin/score - Cập nhật điểm thi thời gian thực và trả về BXH
+  // [POST] /api/rooms/:pin/score - Cập nhật điểm và lấy leaderboard
   if (method === 'POST' && pathname.includes('/score')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/score$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      const playerId = body.id || body.playerId;
-      const nick = String(body.nick || 'Thí sinh').trim().slice(0, 25);
-      const av = String(body.av || '01');
-      const score = Number(body.score) || 0;
-      const currentQ = Number(body.currentQ) || 0;
-      const now = Date.now();
-
-      room.players = room.players || [];
-      let player = room.players.find(p => (playerId && p.id === playerId) || (p.nick.toLowerCase() === nick.toLowerCase() && !p.isHost));
-      if (player) {
-        player.score = score;
-        player.currentQ = currentQ;
-        player.av = av;
-        player.lastUpdated = now;
-      } else {
-        player = {
-          id: playerId || ('p-' + now + '-' + Math.random().toString(36).slice(2, 6)),
-          nick: nick,
-          av: av,
-          score: score,
-          currentQ: currentQ,
-          isHost: false,
-          joinedAt: now,
-          lastUpdated: now
-        };
-        room.players.push(player);
-      }
-
-      const leaderboard = room.players
-        .filter(p => !p.isHost)
-        .map(p => ({
-          id: p.id,
-          nick: p.nick,
-          av: p.av || '01',
-          score: Number(p.score) || 0,
-          currentQ: Number(p.currentQ) || 0,
-          lastUpdated: p.lastUpdated || 0
-        }))
-        .sort((a, b) => (b.score - a.score) || (a.lastUpdated - b.lastUpdated));
-
-      saveActiveRooms(true);
-
-      sendJSON(res, 200, {
-        success: true,
-        player,
-        leaderboard
-      });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/score$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const result = roomsManager.updatePlayerScore(pin, body);
+    sendJSON(res, 200, result);
+    return;
   }
 
-  // 10. [POST] /api/rooms/:pin/lock - Khóa hoặc mở khóa phòng thi
+  // [POST] /api/rooms/:pin/lock
   if (method === 'POST' && pathname.includes('/lock')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/lock$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      if (typeof body.isLocked === 'boolean') {
-        room.isLocked = body.isLocked;
-      } else {
-        room.isLocked = !room.isLocked;
-      }
-
-      saveActiveRooms();
-
-      sendJSON(res, 200, { success: true, pin, isLocked: room.isLocked });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/lock$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const ok = roomsManager.setRoomLock(pin, !!body.isLocked);
+    sendJSON(res, 200, { success: ok, isLocked: !!body.isLocked });
+    return;
   }
 
-  // 11. [POST] /api/rooms/:pin/start - Chủ phòng kích hoạt bắt đầu làm bài (kèm đếm ngược 5 giây)
+  // [POST] /api/rooms/:pin/start
   if (method === 'POST' && pathname.includes('/start')) {
-    try {
-      const match = pathname.match(/^\/api\/rooms\/([^/]+)\/start$/);
-      if (!match) {
-        sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' });
-        return;
-      }
-      const pin = match[1];
-      const room = activeRooms.get(pin);
-      if (!room) {
-        sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã hết hạn!' });
-        return;
-      }
-
-      let body = {};
-      try {
-        body = await readJsonBody(req);
-      } catch (e) {}
-
-      const durationSec = Number(body.countdown) || 5;
-      room.status = 'countdown';
-      room.countdownSeconds = durationSec;
-      room.countdownEnd = Date.now() + (durationSec * 1000);
-      room.startedAt = room.countdownEnd;
-      room.isLocked = true; // Ngay lập tức chuyển phòng về trạng thái khóa khi bắt đầu
-
-      saveActiveRooms();
-
-      sendJSON(res, 200, {
-        success: true,
-        status: 'countdown',
-        isLocked: true,
-        countdownEnd: room.countdownEnd,
-        countdownSeconds: durationSec
-      });
-      return;
-    } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
-      return;
-    }
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/start$/);
+    if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
+    const pin = match[1];
+    const body = await readJsonBody(req);
+    const ok = roomsManager.startRoom(pin, Number(body.countdownSec) || 5);
+    sendJSON(res, 200, { success: ok });
+    return;
   }
 
-  // 12. [DELETE] /api/rooms/:pin - Xóa phòng thi hoạt động
+  // [DELETE] /api/rooms/:pin - Kết thúc và lưu trữ phòng thi vào PostgreSQL
   if (method === 'DELETE' && pathname.startsWith('/api/rooms/')) {
     const pin = pathname.replace('/api/rooms/', '');
-    if (roomCleanupTimers.has(pin)) {
-      clearTimeout(roomCleanupTimers.get(pin));
-      roomCleanupTimers.delete(pin);
-    }
-    const deleted = activeRooms.delete(pin);
-    if (deleted) saveActiveRooms();
-    res.writeHead(200, { 'Content-Type': 'application/json;charset=utf-8' });
-    res.end(JSON.stringify({ success: true, deleted }));
+    await roomsManager.finishAndArchiveRoom(pin);
+    roomsManager.deleteRoom(pin);
+    sendJSON(res, 200, { success: true, deleted: true });
     return;
   }
 
-  // 13. [GET] /api/server-info - Lấy địa chỉ IP nội bộ (LAN) và URL công khai phục vụ tạo mã QR / kết nối
+  // [GET] /api/server-info
   if (method === 'GET' && pathname === '/api/server-info') {
     const lanIp = getServerLanIp();
     const publicUrl = process.env.APP_URL || (host ? `${proto}://${host}` : DEFAULT_APP_URL);
@@ -1835,7 +988,6 @@ const server = http.createServer(async (req, res) => {
   // STATIC FILE SERVING
   // ══════════════════════════════════════════════════════════
 
-  // Hỗ trợ đường dẫn dạng /pin=... hoặc /pin/... -> chuyển hướng sang /index.html?pin=...
   if (pathname.startsWith('/pin=') || pathname.startsWith('/pin/')) {
     const rawPin = pathname.replace(/^\/pin[=/]/, '');
     res.writeHead(302, { Location: '/index.html?pin=' + encodeURIComponent(rawPin) });
@@ -1843,7 +995,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Gate các trang yêu cầu đăng nhập: chưa có session hợp lệ -> đưa về trang chủ kèm cờ needLogin
   const PROTECTED_PAGES = new Set(['/dashboard.html', '/create-exam.html', '/create-room.html']);
   if (PROTECTED_PAGES.has(pathname) && !getSessionUser(req)) {
     res.writeHead(302, { Location: '/index.html?needLogin=1&redirect=' + encodeURIComponent(pathname) });
@@ -1912,25 +1063,25 @@ window.__SERVER_PUBLIC_URL__ = "${publicUrl}";
   fs.createReadStream(fp).pipe(res);
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  const lanIp = getServerLanIp();
-  const publicUrl = process.env.APP_URL || DEFAULT_APP_URL;
-  console.log(`Mini Quiz Classroom server running at:`);
-  console.log(`- Local:    http://localhost:${PORT}`);
-  console.log(`- LAN:      http://${lanIp}:${PORT}`);
-  console.log(`- Cloud:    ${publicUrl}`);
-  console.log(`- Storage:  ${DATA_DIR}`);
-  console.log(`- Database: ${supabase.isConfigured() ? 'Supabase PostgreSQL (Connected)' : 'Local Storage (Fallback mode - Thêm SUPABASE_URL & SUPABASE_KEY vào biến môi trường để kết nối)'}`);
-  console.log(`  + Active rooms: ${activeRooms.size} phòng đang nạp`);
-
-  if (supabase.isConfigured()) {
-    supabase.getPublicExams().then(exams => {
-      if (Array.isArray(exams) && exams.length > 0) {
-        writePublicExams(exams);
-        console.log(`  + Đã đồng bộ ${exams.length} đề thi công khai từ Supabase.`);
-      }
-    }).catch(err => {
-      console.error('Lỗi sync đề thi từ Supabase:', err.message);
-    });
+// Khởi chạy server và nạp cấu trúc Database
+async function startServer() {
+  try {
+    await runMigration();
+    await auth.initAuth();
+    console.log('🚀 [Database] Khởi tạo hệ thống PostgreSQL thành công!');
+  } catch (err) {
+    console.error('Lỗi khởi tạo Database:', err.message);
   }
-});
+
+  server.listen(PORT, '0.0.0.0', () => {
+    const lanIp = getServerLanIp();
+    const publicUrl = process.env.APP_URL || DEFAULT_APP_URL;
+    console.log(`Mini Quiz Classroom server running at:`);
+    console.log(`- Local:    http://localhost:${PORT}`);
+    console.log(`- LAN:      http://${lanIp}:${PORT}`);
+    console.log(`- Cloud:    ${publicUrl}`);
+    console.log(`- Database: PostgreSQL (Single Source of Truth)`);
+  });
+}
+
+startServer();

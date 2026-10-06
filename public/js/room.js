@@ -383,21 +383,24 @@ function updateTimerUI(secsLeft) {
 /* ════════════════════════════════════════════
    ANSWER SELECTION
    ════════════════════════════════════════════ */
+let serverAnswerResult = null;
+
 function selectAnswer(choiceIdx) {
   if (answered) return;
   answered = true;
   selectedChoice = choiceIdx;
+  serverAnswerResult = null;
 
   const q      = QUESTIONS[currentQ];
   const earned = calcScore();
-  earnedThisQ  = choiceIdx === q.correct ? earned : 0;
+  earnedThisQ  = (q && q.correct !== undefined && choiceIdx === q.correct) ? earned : earned;
 
   /* Chỉ highlight lựa chọn, không hiện đúng/sai cho đến khi hết giờ */
   const btns = document.querySelectorAll('.choice-btn');
   btns.forEach(function(b) { b.disabled = true; });
   btns[choiceIdx].classList.add('selected');
 
-  // Gửi lựa chọn đáp án thời gian thực lên máy chủ để chủ phòng theo dõi
+  // Gửi lựa chọn đáp án thời gian thực lên máy chủ để chủ phòng theo dõi và xác thực điểm
   if (PIN && PIN !== '---') {
     fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
       method: 'POST',
@@ -406,9 +409,20 @@ function selectAnswer(choiceIdx) {
         id: myPlayerId,
         nick: NICKNAME,
         qIdx: currentQ,
-        choice: choiceIdx
+        choice: choiceIdx,
+        responseTimeMs: Math.round(ticksElapsed * 25)
       })
-    }).catch(() => {});
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res && res.success) {
+        serverAnswerResult = res;
+        if (typeof res.scoreEarned === 'number') {
+          earnedThisQ = res.scoreEarned;
+        }
+      }
+    })
+    .catch(() => {});
   }
 
   /* Timer vẫn tiếp tục chạy — người chơi phải đợi hết giờ */
@@ -428,15 +442,21 @@ function revealAndShow() {
     timerInterval = null;
   }
 
-  const q = QUESTIONS[currentQ];
+  const q = QUESTIONS[currentQ] || {};
   const btns = document.querySelectorAll('.choice-btn');
   btns.forEach(function(b) { b.disabled = true; });
+
+  const correctIndex = (serverAnswerResult && serverAnswerResult.correctChoice !== undefined && serverAnswerResult.correctChoice >= 0)
+    ? serverAnswerResult.correctChoice
+    : (q.correct !== undefined ? q.correct : -1);
 
   if (!answered) {
     /* Chưa bấm — hết giờ */
     answered = true;
     earnedThisQ = 0;
-    btns[q.correct].classList.add('reveal-correct');
+    if (correctIndex >= 0 && btns[correctIndex]) {
+      btns[correctIndex].classList.add('reveal-correct');
+    }
     userAnswers.push({
       questionIndex: currentQ,
       userChoice: -1,
@@ -445,14 +465,22 @@ function revealAndShow() {
     });
   } else {
     /* Đã bấm — giờ mới hiển thị đúng / sai */
-    btns[selectedChoice].classList.remove('selected');
-    const isCorr = (selectedChoice === q.correct);
+    if (btns[selectedChoice]) btns[selectedChoice].classList.remove('selected');
+    const isCorr = (serverAnswerResult && serverAnswerResult.isCorrect !== undefined)
+      ? serverAnswerResult.isCorrect
+      : (selectedChoice === correctIndex);
+
     if (isCorr) {
-      btns[selectedChoice].classList.add('correct');
+      if (btns[selectedChoice]) btns[selectedChoice].classList.add('correct');
     } else {
-      btns[selectedChoice].classList.add('wrong');
-      btns[q.correct].classList.add('reveal-correct');
+      if (btns[selectedChoice]) btns[selectedChoice].classList.add('wrong');
+      if (correctIndex >= 0 && btns[correctIndex]) btns[correctIndex].classList.add('reveal-correct');
     }
+
+    if (serverAnswerResult && typeof serverAnswerResult.scoreEarned === 'number') {
+      earnedThisQ = serverAnswerResult.scoreEarned;
+    }
+
     userAnswers.push({
       questionIndex: currentQ,
       userChoice: selectedChoice,
