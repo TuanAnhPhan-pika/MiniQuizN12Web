@@ -151,7 +151,7 @@ function getRoomForClient(pin, isHost = false) {
     versionId: q.versionId,
     text: q.text,
     choices: q.choices,
-    explanation: room.status === 'finished' ? (q.explanation || '') : '',
+    ...(room.status === 'finished' ? { explanation: q.explanation || '' } : {}),
     image: q.image || '',
     points: q.points || 100,
     timeLimit: q.timeLimit || 15,
@@ -382,7 +382,6 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
   const serverResponseTimeMs = Math.max(0, Math.min(rawElapsed, timeLimitMs));
 
   // 6. Chấm điểm server-authoritative
-  const correctChoice = question.correct;
   const isCorrect = (typeof question.correct === 'number') ? (question.correct === choiceNum) : false;
 
   let scoreAwarded = 0;
@@ -431,8 +430,7 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     success: true,
     qIdx,
     choice: choiceNum,
-    isCorrect,
-    correctChoice,
+    answerAccepted: true,
     scoreEarned: scoreAwarded,
     newTotalScore: player.score,
     streak: streakAfter,

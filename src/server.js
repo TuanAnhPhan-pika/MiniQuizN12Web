@@ -239,9 +239,9 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Player-Token');
-    } else if (method === 'OPTIONS') {
+    } else if (['OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, message: 'Origin không nằm trong CORS whitelist.' }));
       return;
@@ -1050,6 +1050,32 @@ const server = http.createServer(async (req, res) => {
       }
       const safeRoom = roomsManager.getRoomForClient(pin, isHost);
       sendJSON(res, 200, { success: true, room: safeRoom });
+      return;
+    }
+
+    // Results are public only after the server closes this question.
+    if (subAction === 'result') {
+      const rawQ = parsedUrl.searchParams.get('q');
+      const qIdx = rawQ !== null && /^\d+$/.test(rawQ) ? Number(rawQ) : NaN;
+      if (!Number.isSafeInteger(qIdx) || qIdx < 0 || qIdx >= rawRoom.questions.length) {
+        sendJSON(res, 400, { success: false, message: 'Invalid question index.' });
+        return;
+      }
+      if (rawRoom.status !== 'finished' &&
+          !(rawRoom.status === 'started' && rawRoom.phase === 'result' && qIdx === rawRoom.currentQ)) {
+        sendJSON(res, 403, { success: false, message: 'Question results are not available yet.' });
+        return;
+      }
+      const question = rawRoom.questions[qIdx];
+      const distribution = new Array(question.choices.length).fill(0);
+      for (const answer of Object.values(rawRoom.answers[qIdx] || {})) {
+        if (Number.isInteger(answer.choice) && answer.choice >= 0 && answer.choice < distribution.length) distribution[answer.choice]++;
+      }
+      sendJSON(res, 200, {
+        success: true, qIdx, correctChoice: question.correct,
+        correctText: question.choices[question.correct] || '',
+        explanation: question.explanation || '', distribution,
+      });
       return;
     }
 

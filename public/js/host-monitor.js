@@ -144,7 +144,7 @@
       fetch(`/api/rooms/${encodeURIComponent(PIN)}/advance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'set-question', qIdx: idx })
+        body: JSON.stringify({ nextQ: idx, phase: 'question' })
       }).catch(() => {});
     }
 
@@ -309,7 +309,7 @@
       fetch(`/api/rooms/${encodeURIComponent(PIN)}/advance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'leaderboard', qIdx: currentQ })
+        body: JSON.stringify({ nextQ: currentQ, phase: 'result' })
       }).catch(() => {});
     }
 
@@ -415,7 +415,7 @@
           await fetch(`/api/rooms/${encodeURIComponent(PIN)}/advance`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'next-question' })
+            body: JSON.stringify({ nextQ: nextQ, phase: 'question' })
           });
         } catch (e) {}
       }
@@ -424,10 +424,10 @@
       // Thông báo kết thúc đề thi
       if (PIN && PIN !== '---') {
         try {
-          await fetch(`/api/rooms/${encodeURIComponent(PIN)}/advance`, {
+          await fetch('/api/history/hosted', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'finish' })
+            body: JSON.stringify({ pin: PIN })
           });
         } catch (e) {}
       }

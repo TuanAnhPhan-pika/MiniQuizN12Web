@@ -193,3 +193,93 @@ test('public quiz omits correct answers and explanations unless explicitly inter
   assert.equal(publicQuiz.questions[0].explanation, '');
   assert.equal((await db.getPublicQuizById('quiz', { includeCorrect: true })).questions[0].correct, 1);
 });
+
+
+test('delayed answer reveal, phase gates, host auth and Origin rejection over HTTP', async t => {
+  const rooms = load('src/rooms/manager.js', { '../db/index.js': { async saveHostedGameSession() {} } });
+  const room = await rooms.createRoom({ hostUsername: 'teacher', exam: { questions: [
+    { text: 'Q1', choices: ['A', 'B'], correct: 1, explanation: 'Because B', timeLimit: 15 },
+    { text: 'Q2', choices: ['C', 'D'], correct: 0, explanation: 'Because C' },
+  ] } });
+  const auth = { parseCookies: () => ({}), getSession: token => token === 'host' ? { username: 'teacher' } : null,
+    findUserByUsernameSync: () => ({ id: 1, role: 'teacher' }) };
+  const { server } = load('src/server.js', { dotenv: { config() {} }, './auth.js': auth,
+    './db/index.js': {}, './db/migrate.js': {}, './rooms/manager.js': rooms }, '\nmodule.exports = { server };');
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const route = `/api/rooms/${room.pin}`;
+  const post = (url, body, headers = {}) => fetch(base + url, { method: 'POST', headers: {
+    'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const forbidden = new Set(['correct', 'correctChoice', 'correctIndex', 'correctText', 'is_correct', 'isCorrect', 'explanation', 'playerToken', 'hostToken']);
+  function noLeaks(value) {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, nested] of Object.entries(value)) {
+      assert.ok(!forbidden.has(key), `Leaked ${key}`);
+      noLeaks(nested);
+    }
+  }
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    for (const url of ['/api/rooms', '/api/auth/change-profile']) {
+      assert.equal((await fetch(base + url, { method, headers: { Origin: 'https://evil.example' } })).status, 403);
+    }
+  }
+  assert.equal((await post('/api/rooms', {}, { Origin: 'http://localhost:3000' })).status, 401);
+  const players = [];
+  for (const id of ['a', 'b']) {
+    const joined = await (await post(route + '/join', { id, nick: id }, { Origin: 'http://localhost:3000' })).json();
+    assert.equal(joined.success, true);
+    noLeaks(joined.room);
+    players.push(joined.player);
+  }
+  assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question', isHost: true })).status, 401);
+  const hostHeaders = { Authorization: 'Bearer host' };
+  assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question' }, hostHeaders)).status, 200);
+  const invalidToken = rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: 'wrong', qIdx: 0, choice: 1 });
+  assert.equal(invalidToken.unauthorized, true);
+  assert.equal(rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: players[0].playerToken, qIdx: 1, choice: 0 }).rejected, true);
+  assert.equal(rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: players[0].playerToken, qIdx: 0, choice: 99 }).invalidChoice, true);
+  const phaseStartedAt = rooms.getRawRoom(room.pin).phaseStartedAt;
+  assert.equal((await post(route + '/advance', { nextQ: 1, phase: 'question' }, { ...hostHeaders, Origin: 'https://evil.example' })).status, 403);
+  assert.equal(rooms.getRawRoom(room.pin).currentQ, 0);
+  assert.equal(rooms.getRawRoom(room.pin).phaseStartedAt, phaseStartedAt);
+  for (const [i, player] of players.entries()) {
+    const body = { playerId: player.id, playerToken: player.playerToken, qIdx: 0, choice: i ? 0 : 1, responseTimeMs: -9999, score: 99999 };
+    const accepted = await (await post(route + '/answer', body)).json();
+    assert.equal(accepted.answerAccepted, true);
+    noLeaks(accepted);
+    const record = rooms.getRawRoom(room.pin).answers[0][player.id];
+    assert.equal(record.isCorrect, i === 0);
+    assert.equal(accepted.scoreEarned, record.scoreAwarded);
+    assert.ok(record.responseTimeMs >= 0);
+    assert.equal((await (await post(route + '/answer', body)).json()).duplicate, true);
+  }
+  for (const suffix of ['', '/status', '/state', '/question-stats?q=0', '/leaderboard', '?role=host', '/result?q=0&role=host']) {
+    noLeaks(await (await fetch(base + route + suffix)).json());
+  }
+  assert.equal((await fetch(base + route + '/result?q=0')).status, 403);
+  assert.equal((await fetch(base + route + '/exam-stats')).status, 403);
+  assert.equal((await fetch(base + route + '/exam-stats', { headers: hostHeaders })).status, 200);
+  const hostRoom = await (await fetch(base + route, { headers: hostHeaders })).json();
+  assert.equal(hostRoom.room.questions[0].correct, 1);
+  for (const q of ['-1', '0.5', 'NaN', '', '2', '1e0']) {
+    assert.equal((await fetch(base + route + '/result?q=' + q)).status, 400);
+  }
+  await post(route + '/advance', { nextQ: 0, phase: 'result' }, hostHeaders);
+  const result = await (await fetch(base + route + '/result?q=0')).json();
+  assert.equal(result.correctChoice, 1);
+  assert.equal(result.explanation, 'Because B');
+  assert.deepEqual(result.distribution, [1, 1]);
+  assert.equal((await fetch(base + route + '/result?q=1')).status, 403);
+  assert.equal(rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: players[0].playerToken, qIdx: 0, choice: 1 }).rejected, true);
+  await post(route + '/advance', { nextQ: 1, phase: 'question' }, hostHeaders);
+  assert.equal(rooms.getRawRoom(room.pin).phase, 'question');
+  noLeaks(await (await fetch(base + route)).json());
+  assert.equal((await fetch(base + route + '/result?q=1')).status, 403);
+  assert.equal((await fetch(base + route + '/result?q=0')).status, 403);
+  await post('/api/history/hosted', { pin: room.pin }, hostHeaders);
+  for (const q of [0, 1]) assert.equal((await fetch(base + route + '/result?q=' + q)).status, 200);
+  const finished = await (await fetch(base + route)).json();
+  assert.equal(finished.room.questions[1].correct, 0);
+  assert.equal(JSON.stringify(finished).includes('playerToken'), false);
+});

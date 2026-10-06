@@ -16,6 +16,7 @@ const params   = new URLSearchParams(location.search);
 const PIN      = params.get('pin')  || '---';
 const NICKNAME = params.get('nick') || 'Bạn';
 const AVATAR   = params.get('av')   || '01';
+let localPractice = false;
 let EXAM_TITLE = 'Đề thi Toán & Logic';
 
 // Load custom room questions if available
@@ -24,6 +25,7 @@ try {
   const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
   if (roomPin && customRooms[roomPin] && Array.isArray(customRooms[roomPin].questions) && customRooms[roomPin].questions.length > 0) {
     QUESTIONS = customRooms[roomPin].questions;
+    localPractice = roomPin.startsWith('TEST-') && customRooms[roomPin].isTest === true;
     if (customRooms[roomPin].title) {
       EXAM_TITLE = customRooms[roomPin].title;
     }
@@ -54,6 +56,7 @@ let totalScore   = 0;
 let timerInterval = null;
 let timerStartTimeout = null;
 let autoNextTimeout = null;
+let revealTimeout = null;
 let playerStateInterval = null;
 let isRevealing   = false;
 let ticksElapsed  = 0;
@@ -132,12 +135,15 @@ async function syncRoomFromServer() {
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.room) {
+        localPractice = false;
         if (Array.isArray(data.room.questions) && data.room.questions.length > 0) {
           QUESTIONS = data.room.questions;
         }
         if (data.room.title || data.room.name) {
           EXAM_TITLE = data.room.name || data.room.title;
         }
+        currentQ = Number(data.room.currentQ) || 0;
+        isFinished = data.room.status === 'finished';
         if (data.room.timePerQ) {
           TIMER_SECS = Number(data.room.timePerQ) || 15;
         }
@@ -279,6 +285,8 @@ function escapeHtml(str) {
    QUESTION LOADER
    ════════════════════════════════════════════ */
 function loadQuestion(idx) {
+  if (revealTimeout) clearTimeout(revealTimeout);
+  if (timerStartTimeout) clearTimeout(timerStartTimeout);
   if (autoNextTimeout) {
     clearTimeout(autoNextTimeout);
     autoNextTimeout = null;
@@ -293,6 +301,8 @@ function loadQuestion(idx) {
   ticksElapsed   = 0;
   earnedThisQ    = 0;
   selectedChoice = -1;
+  serverAnswerResult = null;
+  closedQuestionResult = null;
 
   const q = QUESTIONS[idx];
   document.getElementById('question-meta').textContent = 'Câu ' + (idx+1) + ' / ' + QUESTIONS.length;
@@ -315,12 +325,12 @@ function loadQuestion(idx) {
   startTimer();
 
   // Bắt đầu theo dõi trạng thái đồng bộ với chủ phòng
-  startPlayerStateTracking(idx);
+  startPlayerStateTracking();
 }
 
-function startPlayerStateTracking(qIdx) {
+function startPlayerStateTracking() {
   if (playerStateInterval) clearInterval(playerStateInterval);
-  if (!PIN || PIN === '---' || params.get('isTest') === '1') return;
+  if (!PIN || PIN === '---' || localPractice) return;
 
   playerStateInterval = setInterval(async () => {
     try {
@@ -328,32 +338,22 @@ function startPlayerStateTracking(qIdx) {
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          // 1. Khi đang trong lúc làm bài: Nếu chủ phòng chuyển sang phase leaderboard hoặc toàn bộ đã trả lời
-          if (!isRevealing && (data.phase === 'leaderboard' || (data.allAnswered && data.totalCandidates > 0))) {
-            clearInterval(playerStateInterval);
-            playerStateInterval = null;
-            if (timerInterval) clearInterval(timerInterval);
-            revealAndShow();
-            return;
-          }
-
-          // 2. Khi đang ở bảng xếp hạng: Nếu chủ phòng bấm chuyển sang câu tiếp theo
-          if (isRevealing && data.phase === 'question' && typeof data.currentQ === 'number' && data.currentQ > currentQ) {
+          // Only server phase/status authorize result and navigation.
+          if (data.status === 'finished') {
             clearInterval(playerStateInterval);
             playerStateInterval = null;
             if (autoNextTimeout) clearTimeout(autoNextTimeout);
-            isRevealing = false;
+            if (timerInterval) clearInterval(timerInterval);
+            await syncRoomFromServer();
+            showFinal(lastSortedRank, myFinalRank);
+            return;
+          }
+          if (data.phase === 'question' && data.currentQ > currentQ) {
             loadQuestion(data.currentQ);
             return;
           }
-
-          // 3. Nếu chủ phòng kết thúc đề thi
-          if (isRevealing && data.phase === 'finished') {
-            clearInterval(playerStateInterval);
-            playerStateInterval = null;
-            if (autoNextTimeout) clearTimeout(autoNextTimeout);
-            showFinal(lastSortedRank, myFinalRank);
-            return;
+          if (!isRevealing && data.phase === 'result' && data.currentQ === currentQ) {
+            await revealAndShow();
           }
         }
       }
@@ -398,7 +398,8 @@ function startTimer() {
       if (ticksElapsed >= TIMER_SECS * (1000 / TICK_MS)) {
         clearInterval(timerInterval);
         // Timer hết — nếu chưa ai bấm: 0 điểm; nếu đã bấm: dùng earnedThisQ đã lưu
-        revealAndShow();
+        if (!PIN || PIN === '---' || localPractice) revealAndShow();
+        else document.querySelectorAll('.choice-btn').forEach(b => { b.disabled = true; });
       }
     }, TICK_MS);
   }, 250);
@@ -419,6 +420,8 @@ function updateTimerUI(secsLeft) {
    ANSWER SELECTION
    ════════════════════════════════════════════ */
 let serverAnswerResult = null;
+let closedQuestionResult = null;
+let resultFetchPending = false;
 
 function selectAnswer(choiceIdx) {
   if (answered) return;
@@ -426,9 +429,9 @@ function selectAnswer(choiceIdx) {
   selectedChoice = choiceIdx;
   serverAnswerResult = null;
 
-  const q      = QUESTIONS[currentQ];
-  const earned = calcScore();
-  earnedThisQ  = (q && q.correct !== undefined && choiceIdx === q.correct) ? earned : earned;
+  earnedThisQ = 0;
+  const submittedQ = currentQ;
+  if (localPractice) earnedThisQ = calcScore();
 
   /* Chỉ highlight lựa chọn, không hiện đúng/sai cho đến khi hết giờ */
   const btns = document.querySelectorAll('.choice-btn');
@@ -455,8 +458,9 @@ function selectAnswer(choiceIdx) {
     })
     .then(r => r.json())
     .then(res => {
-      if (res && res.success) {
+      if (res && res.success && currentQ === submittedQ) {
         serverAnswerResult = res;
+        document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
         if (typeof res.scoreEarned === 'number') {
           earnedThisQ = res.scoreEarned;
         }
@@ -473,9 +477,22 @@ function calcScore() {
   return Math.max(0, MAX_SCORE - ticksElapsed * 2.5);
 }
 
-/* Gọi khi timer hết hoặc khi toàn bộ thí sinh đã nộp bài — hiển thị đúng/sai rồi chuyển kết quả */
-function revealAndShow() {
-  if (isRevealing) return;
+/* Multiplayer reveal requires an accepted result response from the server. */
+async function revealAndShow() {
+  if (isRevealing || resultFetchPending) return;
+  if (PIN && PIN !== '---' && !localPractice) {
+    const requestedQ = currentQ;
+    resultFetchPending = true;
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/result?q=${requestedQ}`);
+      if (!response.ok) return;
+      const result = await response.json();
+      if (!result.success || requestedQ !== currentQ) return;
+      closedQuestionResult = result;
+    } catch (e) { return; }
+    finally { resultFetchPending = false; }
+  }
+
   isRevealing = true;
   if (timerInterval) {
     clearInterval(timerInterval);
@@ -486,9 +503,8 @@ function revealAndShow() {
   const btns = document.querySelectorAll('.choice-btn');
   btns.forEach(function(b) { b.disabled = true; });
 
-  const correctIndex = (serverAnswerResult && serverAnswerResult.correctChoice !== undefined && serverAnswerResult.correctChoice >= 0)
-    ? serverAnswerResult.correctChoice
-    : (q.correct !== undefined ? q.correct : -1);
+  const correctIndex = closedQuestionResult ? closedQuestionResult.correctChoice
+    : ((!PIN || PIN === '---' || localPractice) && q.correct !== undefined ? q.correct : -1);
 
   if (!answered) {
     /* Chưa bấm — hết giờ */
@@ -506,9 +522,7 @@ function revealAndShow() {
   } else {
     /* Đã bấm — giờ mới hiển thị đúng / sai */
     if (btns[selectedChoice]) btns[selectedChoice].classList.remove('selected');
-    const isCorr = (serverAnswerResult && serverAnswerResult.isCorrect !== undefined)
-      ? serverAnswerResult.isCorrect
-      : (selectedChoice === correctIndex);
+    const isCorr = selectedChoice === correctIndex;
 
     if (isCorr) {
       if (btns[selectedChoice]) btns[selectedChoice].classList.add('correct');
@@ -530,7 +544,7 @@ function revealAndShow() {
   }
 
   // Đợi 1.2s để người chơi thấy rõ kết quả đúng/sai trước khi hiện bảng xếp hạng
-  setTimeout(function() {
+  revealTimeout = setTimeout(function() {
     // Reset thanh thời gian đầy 100% trước khi chuyển cảnh
     resetTimerBar();
     showResult(earnedThisQ);
@@ -556,9 +570,12 @@ async function showResult(earned) {
   const isLast   = currentQ === QUESTIONS.length - 1;
 
   /* Result info */
-  const wasCorrect = earned > 0;
+  const wasCorrect = selectedChoice >= 0 && (closedQuestionResult ? selectedChoice === closedQuestionResult.correctChoice : earned > 0);
   document.getElementById('result-title').textContent =
     wasCorrect ? '✅ Đúng rồi!' : (earnedThisQ === 0 && answered ? '❌ Sai mất rồi!' : '⏰ Hết giờ!');
+  if (closedQuestionResult && closedQuestionResult.explanation) {
+    document.getElementById('result-title').textContent += ' ' + closedQuestionResult.explanation;
+  }
   document.getElementById('result-score-earned').innerHTML =
     '+' + Math.round(earned);
   document.getElementById('result-total').textContent =
@@ -602,9 +619,9 @@ async function showResult(earned) {
   myFinalRank = yourRank;
 
   // Thí sinh trong phòng thi có chủ phòng: CHỜ bảng xếp hạng đếm ngược xong hoặc chủ phòng chọn Next thủ công
-  const isRealRoomWithHost = (PIN && PIN !== '---' && params.get('isTest') !== '1');
+  const isRealRoomWithHost = (PIN && PIN !== '---' && !localPractice);
   if (isRealRoomWithHost) {
-    startPlayerStateTracking(currentQ);
+    startPlayerStateTracking();
   } else {
     /* Chế độ thi thử đơn: Tự động chuyển câu sau 4 giây */
     autoNextTimeout = setTimeout(function() {
@@ -687,6 +704,8 @@ function nextQuestion() {
 }
 
 async function showFinal(sorted, yourRank) {
+  if (revealTimeout) clearTimeout(revealTimeout);
+  if (timerStartTimeout) clearTimeout(timerStartTimeout);
   // Lấy lại BXH cuối cùng mới nhất một lần nữa
   try {
     const res = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/leaderboard`);
@@ -703,7 +722,7 @@ async function showFinal(sorted, yourRank) {
         if (fresh.length > 0) {
           sorted = fresh;
           const idx = sorted.findIndex(p => p.isYou);
-          if (idx >= 0) yourRank = idx + 1;
+          if (idx >= 0) { yourRank = idx + 1; totalScore = sorted[idx].score; }
         }
       }
     }
