@@ -148,10 +148,11 @@ async function syncRoomFromServer() {
     }
     if (!myPlayerToken && PIN && PIN !== '---') {
       try {
+        const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
         const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR })
+          body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR, playerToken: existingToken })
         });
         if (jRes.ok) {
           const jData = await jRes.json();

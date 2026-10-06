@@ -153,6 +153,7 @@
 
     // 2. Gửi request tham gia lên server
     try {
+      const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
       const res = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -160,6 +161,7 @@
           id: myPlayerId,
           nick: NICKNAME,
           av: AVATAR,
+          playerToken: existingToken,
           isHost: isHost
         })
       });
@@ -181,6 +183,15 @@
           currentPlayers = data.players || (data.room && data.room.players) || [];
           renderPlayers(currentPlayers);
           syncLocalRoomState(currentPlayers, data.status);
+        } else {
+          // Xử lý thông báo lỗi (nickname trùng hoặc phòng khóa/đầy)
+          if (data.message) {
+            alert(data.message);
+          }
+          if (data.locked || data.full) {
+            window.location.href = 'index.html';
+            return;
+          }
         }
       } else {
         // Nếu server trả về 404 (chưa có phòng trên server, fallback dùng local)
@@ -336,10 +347,11 @@
 
     // 1. Gửi request báo lên server để xóa khỏi danh sách phòng chờ
     try {
+      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
       await fetch(`/api/rooms/${encodeURIComponent(PIN)}/leave`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: myPlayerId, nick: NICKNAME })
+        body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, playerToken: myToken })
       });
     } catch (err) {}
 
@@ -352,6 +364,7 @@
     } catch (e) {}
 
     sessionStorage.removeItem('mqc_my_player_id');
+    sessionStorage.removeItem('mqc_my_player_token_' + PIN);
 
     // 3. Chuyển hướng người dùng
     const target = loggedInUser ? 'dashboard.html' : 'index.html';
@@ -361,7 +374,8 @@
   // Tự động giải phóng chỗ khi tắt tab hoặc rời trang
   window.addEventListener('pagehide', function() {
     if (PIN && myPlayerId) {
-      const payload = JSON.stringify({ id: myPlayerId, nick: NICKNAME });
+      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+      const payload = JSON.stringify({ id: myPlayerId, nick: NICKNAME, playerToken: myToken });
       if (navigator.sendBeacon) {
         navigator.sendBeacon(`/api/rooms/${encodeURIComponent(PIN)}/leave`, payload);
       }

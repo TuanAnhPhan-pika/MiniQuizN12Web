@@ -337,6 +337,7 @@ async function formatQuizWithQuestionsSupabase(quizRow, includeCorrect = true) {
     pointsPerQ: quizRow.points_per_q || 100,
     isPublic: !!quizRow.is_public,
     ownerUsername: quizRow.owner_id || '',
+    ownerUserId: quizRow.owner_user_id || null,
     parentCode: quizRow.parent_code || '',
     copiesIssued: quizRow.copies_issued || 0,
     sharedBy: quizRow.shared_by || '',
@@ -385,7 +386,7 @@ async function getPrivateQuizzes(ownerUsername) {
   return out;
 }
 
-async function getQuizById(quizId, { includeCorrect = true } = {}) {
+async function getQuizById(quizId, { includeCorrect = true, requestingUser = null } = {}) {
   const res = await pg.query(
     `SELECT * FROM quizzes 
      WHERE (id = $1 OR code = $1)
@@ -395,7 +396,23 @@ async function getQuizById(quizId, { includeCorrect = true } = {}) {
     [quizId]
   );
   if (res.rows.length === 0) return null;
-  return await formatQuizWithQuestionsPG(res.rows[0], includeCorrect);
+  const row = res.rows[0];
+
+  // Phân quyền: nếu đề thi là riêng tư (is_public = false), chỉ owner thực hoặc admin mới được truy cập
+  if (!row.is_public && requestingUser) {
+    const reqUname = String(typeof requestingUser === 'string' ? requestingUser : requestingUser.username || '').toLowerCase();
+    const reqUid = typeof requestingUser === 'object' ? requestingUser.id : null;
+    const isOwner = (reqUid && row.owner_user_id === reqUid) ||
+                    (row.owner_id && row.owner_id.toLowerCase() === reqUname) ||
+                    (row.shared_by && row.shared_by.toLowerCase() === reqUname) ||
+                    reqUname === 'admin' ||
+                    (typeof requestingUser === 'object' && requestingUser.role === 'admin');
+    if (!isOwner) {
+      return null;
+    }
+  }
+
+  return await formatQuizWithQuestionsPG(row, includeCorrect);
 }
 
 async function saveQuiz(exam, ownerUsername, isPublic = false) {
@@ -568,7 +585,7 @@ async function deleteQuiz(quizId, ownerUsername) {
     `UPDATE quizzes 
      SET deleted_at = NOW(), status = 'archived' 
      WHERE id = $1 
-       AND (owner_user_id = $2 OR LOWER(owner_id) = $3 OR $3 = 'admin' OR $3 = 'system')
+       AND (owner_user_id = $2 OR LOWER(owner_id) = $3 OR LOWER(shared_by) = $3 OR $3 = 'admin')
      RETURNING id`,
     [quizId, ownerUserId, lower]
   );
