@@ -11,7 +11,7 @@ const roomsManager = require('./rooms/manager.js');
 const ROOT = path.resolve(__dirname, '..');
 const STATIC_DIR = path.join(ROOT, 'public');
 const PORT = process.env.PORT || 3000;
-const DEFAULT_APP_URL = 'https://mini-quiz-classroom-n12.ai.studio';
+const DEFAULT_APP_URL = 'https://miniquizn12web.ai.studio';
 
 // Lấy địa chỉ IP mạng nội bộ (LAN) của máy chủ - ưu tiên card Wi-Fi thật, bỏ qua card VPN ảo
 function getServerLanIp() {
@@ -203,6 +203,7 @@ function getAllowedOrigins() {
     [
       process.env.APP_URL,
       DEFAULT_APP_URL,
+      'https://mini-quiz-classroom-n12.ai.studio',
       ...(process.env.CORS_ORIGINS || '')
         .split(',')
         .map(x => x.trim())
