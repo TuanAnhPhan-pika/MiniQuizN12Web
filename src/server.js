@@ -187,13 +187,37 @@ function getSessionUser(req) {
 }
 
 function isAdmin(sessionUser) {
-  return !!sessionUser && (sessionUser.role === 'admin' || sessionUser.username?.toLowerCase() === 'admin');
+  return !!sessionUser && (
+    sessionUser.role === 'admin'
+    /* TODO: remove username-based admin fallback after migration */
+    || sessionUser.username?.toLowerCase() === 'admin'
+  );
 }
 
 function isRoomHost(sessionUser, room) {
   return !!sessionUser && !!room && (
     (sessionUser.username && room.hostUsername && sessionUser.username.toLowerCase() === room.hostUsername.toLowerCase()) ||
     isAdmin(sessionUser)
+  );
+}
+
+function getAllowedOrigins() {
+  const lanIp = getServerLanIp();
+  return new Set(
+    [
+      process.env.APP_URL,
+      DEFAULT_APP_URL,
+      ...(process.env.CORS_ORIGINS || '')
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean),
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      `http://localhost:${PORT}`,
+      `http://127.0.0.1:${PORT}`,
+      lanIp ? `http://${lanIp}:${PORT}` : null,
+      lanIp ? `http://${lanIp}:3000` : null,
+    ].filter(Boolean)
   );
 }
 
@@ -210,17 +234,22 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method.toUpperCase();
 
-  // CORS headers
+  // CORS Handling: Whitelist nghiêm ngặt từ ENV - KHÔNG reflect mọi origin!
   const origin = req.headers.origin;
   if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Vary', 'Origin');
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const allowedOrigins = getAllowedOrigins();
+    if (allowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Player-Token');
+    } else if (method === 'OPTIONS') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: 'Origin không nằm trong CORS whitelist.' }));
+      return;
+    }
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Player-Token');
 
   if (method === 'OPTIONS') {
     res.writeHead(204);
@@ -531,58 +560,74 @@ const server = http.createServer(async (req, res) => {
         const playerId = body.playerId || body.id;
         const playerToken = body.playerToken || req.headers['x-player-token'];
         let player = null;
+
+        // A. Ưu tiên: Xác thực qua playerId + playerToken bí mật
         if (playerId && playerToken) {
           player = roomsManager.verifyPlayer(rawRoom, playerId, playerToken);
         }
+
+        // B. Nếu là logged-in user và không có token: CHỈ match qua account binding do server gán lúc join
         if (!player && sessionUser) {
-          player = (rawRoom.players || []).find(p => p.nick && p.nick.toLowerCase() === sessionUser.username.toLowerCase());
+          player = (rawRoom.players || []).find(p =>
+            (p.accountUserId && sessionUser.userId && p.accountUserId === sessionUser.userId) ||
+            (p.accountUsername && sessionUser.username && p.accountUsername.toLowerCase() === sessionUser.username.toLowerCase())
+          );
         }
 
-        if (player) {
-          const questions = rawRoom.questions || [];
-          let serverScore = Number(player.score) || 0;
-          let correctCount = 0;
-          const answersDetail = [];
-
-          for (let qIdx = 0; qIdx < questions.length; qIdx++) {
-            const q = questions[qIdx];
-            const ansRecord = rawRoom.answers && rawRoom.answers[qIdx] && rawRoom.answers[qIdx][player.id];
-            const isCorrect = ansRecord ? !!ansRecord.isCorrect : false;
-            if (isCorrect) correctCount++;
-            answersDetail.push({
-              questionIndex: qIdx,
-              questionVersionId: q.versionId || null,
-              userChoice: ansRecord ? ansRecord.choice : -1,
-              isCorrect: isCorrect,
-              earned: ansRecord ? ansRecord.scoreAwarded : 0,
-              scoreAwarded: ansRecord ? ansRecord.scoreAwarded : 0,
-              responseTimeMs: ansRecord ? ansRecord.responseTimeMs : 0,
-              streakBefore: ansRecord ? ansRecord.streakBefore : 0,
-              streakAfter: ansRecord ? ansRecord.streakAfter : 0,
-            });
-          }
-
-          const totalQuestions = questions.length;
-          const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-
-          authoritativeRecord = {
-            username,
-            quizId: rawRoom.examId || null,
-            pin: rawRoom.pin,
-            roomTitle: rawRoom.title,
-            examTitle: rawRoom.title,
-            score: serverScore,
-            maxScore: totalQuestions * 100,
-            correctCount,
-            wrongCount: totalQuestions - correctCount,
-            totalQuestions,
-            ratioPct,
-            accuracyPct: ratioPct,
-            formattedTime: new Date().toLocaleString('vi-VN'),
-            details: answersDetail,
-            answersDetail,
-          };
+        // Tuyệt đối KHÔNG fallback theo p.nick! Nếu không xác minh được danh tính -> Từ chối!
+        if (!player) {
+          sendJSON(res, 403, {
+            success: false,
+            message: 'Không thể xác minh danh tính người chơi trong phòng thi.'
+          });
+          return;
         }
+
+        const questions = rawRoom.questions || [];
+        let serverScore = Number(player.score) || 0;
+        let correctCount = 0;
+        const answersDetail = [];
+
+        for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+          const q = questions[qIdx];
+          const ansRecord = rawRoom.answers && rawRoom.answers[qIdx] && rawRoom.answers[qIdx][player.id];
+          const isCorrect = ansRecord ? !!ansRecord.isCorrect : false;
+          if (isCorrect) correctCount++;
+          answersDetail.push({
+            questionIndex: qIdx,
+            questionVersionId: q.versionId || null,
+            userChoice: ansRecord ? ansRecord.choice : -1,
+            isCorrect: isCorrect,
+            earned: ansRecord ? ansRecord.scoreAwarded : 0,
+            scoreAwarded: ansRecord ? ansRecord.scoreAwarded : 0,
+            responseTimeMs: ansRecord ? ansRecord.responseTimeMs : 0,
+            streakBefore: ansRecord ? ansRecord.streakBefore : 0,
+            streakAfter: ansRecord ? ansRecord.streakAfter : 0,
+          });
+        }
+
+        const totalQuestions = questions.length;
+        const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+
+        authoritativeRecord = {
+          id: `attempt-${rawRoom.sessionId}-${player.id}`,
+          gameSessionId: rawRoom.sessionId,
+          username,
+          quizId: rawRoom.examId || null,
+          pin: rawRoom.pin,
+          roomTitle: rawRoom.title,
+          examTitle: rawRoom.title,
+          score: serverScore,
+          maxScore: totalQuestions * 100,
+          correctCount,
+          wrongCount: totalQuestions - correctCount,
+          totalQuestions,
+          ratioPct,
+          accuracyPct: ratioPct,
+          formattedTime: new Date().toLocaleString('vi-VN'),
+          details: answersDetail,
+          answersDetail,
+        };
       }
 
       // 2. Solo Quiz / Custom Exam: Server tự chấm lại theo Database Quiz
@@ -882,16 +927,16 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJsonBody(req);
       const examId = body.id || body.examId;
-      const targetExam = await db.getQuizById(examId, { includeCorrect: true, requestingUser: sessionUser });
+      // Dùng hàm chuyên biệt chỉ cho phép đề công khai: không cho phép sao chép đề riêng tư
+      const targetExam = await db.getPublicQuizById(examId, { includeCorrect: true });
 
       if (!targetExam) {
         sendJSON(res, 404, { success: false, message: 'Không tìm thấy đề thi hoặc đề thi không công khai!' });
         return;
       }
 
-      // Tăng số bản sao phát hành của đề gốc
-      targetExam.copiesIssued = (targetExam.copiesIssued || 0) + 1;
-      await db.saveQuiz(targetExam, targetExam.ownerUsername || sessionUser.username, true);
+      // Tăng số bản sao phát hành trực tiếp trong DB mà không saveQuiz() toàn bộ đề
+      await db.incrementQuizCopiesIssued(targetExam.id);
 
       // Tạo bản sao cho Private Storage của giáo viên
       const newPrivateExam = {
@@ -1176,6 +1221,8 @@ const server = http.createServer(async (req, res) => {
       av: body.av || '01',
       playerToken: body.playerToken || req.headers['x-player-token'],
       isHost: !!isHost,
+      accountUserId: sessionUser?.userId || null,
+      accountUsername: sessionUser?.username || null
     });
 
     if (!result.success) {
@@ -1393,12 +1440,22 @@ window.__SERVER_PUBLIC_URL__ = "${publicUrl}";
 
 // Khởi chạy server và nạp cấu trúc Database
 async function startServer() {
+  if (!process.env.DATABASE_URL && !process.env.PGHOST && !process.env.SQL_HOST) {
+    if (process.env.ALLOW_OFFLINE_MODE !== 'true') {
+      console.error('❌ [Database] Lỗi nghiêm trọng: Thiếu biến môi trường DATABASE_URL để kết nối PostgreSQL.');
+      process.exit(1);
+    }
+  }
+
   try {
     await runMigration();
     await auth.initAuth();
     console.log('🚀 [Database] Khởi tạo hệ thống PostgreSQL thành công!');
   } catch (err) {
-    console.error('Lỗi khởi tạo Database:', err.message);
+    console.error('❌ [Database] Lỗi khởi tạo Database:', err.message);
+    if (process.env.ALLOW_OFFLINE_MODE !== 'true') {
+      process.exit(1);
+    }
   }
 
   server.listen(PORT, '0.0.0.0', () => {

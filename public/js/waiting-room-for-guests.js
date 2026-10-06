@@ -45,11 +45,11 @@
   const ROLE = params.get('role') || 'guest'; // 'host' hoặc 'guest'
   const isHost = (ROLE === 'host');
 
-  // ID duy nhất cho người chơi trong phiên này
-  let myPlayerId = sessionStorage.getItem('mqc_my_player_id');
+  // ID duy nhất cho người chơi trong phiên này (Scope theo PIN phòng thi)
+  let myPlayerId = sessionStorage.getItem('mqc_my_player_id_' + PIN);
   if (!myPlayerId) {
     myPlayerId = 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-    sessionStorage.setItem('mqc_my_player_id', myPlayerId);
+    sessionStorage.setItem('mqc_my_player_id_' + PIN, myPlayerId);
   }
 
   /* ── Hiển thị thông tin ban đầu ── */
@@ -153,7 +153,7 @@
 
     // 2. Gửi request tham gia lên server
     try {
-      const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+      const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
       const res = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -171,11 +171,10 @@
         if (data.success) {
           if (data.player && data.player.playerToken) {
             sessionStorage.setItem('mqc_my_player_token_' + PIN, data.player.playerToken);
-            sessionStorage.setItem('mqc_my_player_token', data.player.playerToken);
           }
           if (data.player && data.player.id) {
             myPlayerId = data.player.id;
-            sessionStorage.setItem('mqc_my_player_id', myPlayerId);
+            sessionStorage.setItem('mqc_my_player_id_' + PIN, myPlayerId);
           }
           if (data.title) {
             document.getElementById('room-title-display').textContent = data.title;
@@ -319,8 +318,11 @@
     roomCancelledNotified = true;
     if (pollInterval) clearInterval(pollInterval);
 
-    // Dọn dẹp session người chơi
+    // Dọn dẹp session người chơi (theo PIN phòng)
+    sessionStorage.removeItem('mqc_my_player_id_' + PIN);
+    sessionStorage.removeItem('mqc_my_player_token_' + PIN);
     sessionStorage.removeItem('mqc_my_player_id');
+    sessionStorage.removeItem('mqc_my_player_token');
 
     const modal = document.getElementById('cancelled-modal');
     if (modal) {
@@ -347,7 +349,7 @@
 
     // 1. Gửi request báo lên server để xóa khỏi danh sách phòng chờ
     try {
-      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
       await fetch(`/api/rooms/${encodeURIComponent(PIN)}/leave`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -363,8 +365,10 @@
       localStorage.setItem(key, JSON.stringify(players));
     } catch (e) {}
 
-    sessionStorage.removeItem('mqc_my_player_id');
+    sessionStorage.removeItem('mqc_my_player_id_' + PIN);
     sessionStorage.removeItem('mqc_my_player_token_' + PIN);
+    sessionStorage.removeItem('mqc_my_player_id');
+    sessionStorage.removeItem('mqc_my_player_token');
 
     // 3. Chuyển hướng người dùng
     const target = loggedInUser ? 'dashboard.html' : 'index.html';
@@ -374,7 +378,7 @@
   // Tự động giải phóng chỗ khi tắt tab hoặc rời trang
   window.addEventListener('pagehide', function() {
     if (PIN && myPlayerId) {
-      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+      const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
       const payload = JSON.stringify({ id: myPlayerId, nick: NICKNAME, playerToken: myToken });
       if (navigator.sendBeacon) {
         navigator.sendBeacon(`/api/rooms/${encodeURIComponent(PIN)}/leave`, payload);

@@ -33,13 +33,13 @@ try {
   }
 } catch(e) {}
 
-// ID định danh thí sinh trong phiên thi đấu
-let myPlayerId = sessionStorage.getItem('mqc_my_player_id');
+// ID định danh thí sinh trong phiên thi đấu (Scope theo PIN phòng)
+let myPlayerId = sessionStorage.getItem('mqc_my_player_id_' + PIN);
 if (!myPlayerId) {
   myPlayerId = 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-  sessionStorage.setItem('mqc_my_player_id', myPlayerId);
+  sessionStorage.setItem('mqc_my_player_id_' + PIN, myPlayerId);
 }
-let myPlayerToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+let myPlayerToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
 
 // Bảng xếp hạng thí sinh thực tế đồng bộ từ server
 let liveLeaderboard = [
@@ -148,7 +148,7 @@ async function syncRoomFromServer() {
     }
     if (!myPlayerToken && PIN && PIN !== '---') {
       try {
-        const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
+        const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
         const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -159,7 +159,6 @@ async function syncRoomFromServer() {
           if (jData.player && jData.player.playerToken) {
             myPlayerToken = jData.player.playerToken;
             sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
-            sessionStorage.setItem('mqc_my_player_token', myPlayerToken);
           }
         }
       } catch (e) {}
@@ -252,6 +251,18 @@ async function checkUserInRoom() {
   } catch (e) {
     // Để nguyên nút đăng nhập vãng lai và link về index.html
   }
+
+  // Dọn dẹp token định danh khi thí sinh rời phòng trở về trang chủ hoặc dashboard
+  document.querySelectorAll('.btn-home').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (PIN) {
+        sessionStorage.removeItem('mqc_my_player_token_' + PIN);
+        sessionStorage.removeItem('mqc_my_player_id_' + PIN);
+        sessionStorage.removeItem('mqc_my_player_token');
+        sessionStorage.removeItem('mqc_my_player_id');
+      }
+    });
+  });
 }
 
 function escapeHtml(str) {

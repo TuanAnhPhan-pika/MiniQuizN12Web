@@ -569,8 +569,14 @@ async function finishAndArchiveRoom(pin) {
   room.isArchived = true;
 
   const now = Date.now();
+  let sessionId = room.sessionId;
+  if (!sessionId) {
+    console.warn(`⚠️ [Room ${room.pin}] Legacy room missing sessionId, falling back to generated id.`);
+    sessionId = `hosted-${room.pin}-${now}`;
+  }
+
   const sessionRecord = {
-    id: room.sessionId || `hosted-${room.pin}-${now}`,
+    id: sessionId,
     pin: room.pin,
     quizId: room.examId,
     roomTitle: room.title,

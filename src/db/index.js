@@ -17,7 +17,11 @@ if (supabaseUrl && supabaseKey) {
   }
 }
 
+const DATA_BACKEND = process.env.DATA_BACKEND || 'pg';
+
 function useSupabase() {
+  // Kiến trúc runtime: Ưu tiên PostgreSQL (Node.js -> pg -> Supabase PostgreSQL)
+  if (DATA_BACKEND === 'pg') return false;
   return !!(supabase && supabaseUrl && supabaseKey);
 }
 
@@ -418,6 +422,41 @@ async function getQuizById(quizId, { includeCorrect = false, requestingUser = nu
   return await formatQuizWithQuestionsPG(row, includeCorrect);
 }
 
+/**
+ * Hàm chuyên biệt truy vấn đề thi công khai:
+ * - Chỉ trả về đề thi có is_public = true, chưa bị xóa và chưa bị lưu trữ.
+ * - Mặc định KHÔNG trả về đáp án đúng (includeCorrect = false).
+ */
+async function getPublicQuizById(quizId, { includeCorrect = false } = {}) {
+  const res = await pg.query(
+    `SELECT * FROM quizzes 
+     WHERE (id = $1 OR code = $1)
+       AND is_public = true
+       AND (deleted_at IS NULL)
+       AND (status IS NULL OR status != 'archived')
+     LIMIT 1`,
+    [quizId]
+  );
+  if (res.rows.length === 0) return null;
+  return await formatQuizWithQuestionsPG(res.rows[0], includeCorrect);
+}
+
+/**
+ * Tăng bộ đếm bản sao của đề thi công khai mà không rebuild hay ghi đè đề thi
+ */
+async function incrementQuizCopiesIssued(quizId) {
+  const res = await pg.query(
+    `UPDATE quizzes 
+     SET copies_issued = COALESCE(copies_issued, 0) + 1 
+     WHERE (id = $1 OR code = $1)
+       AND is_public = true
+       AND deleted_at IS NULL
+     RETURNING copies_issued`,
+    [quizId]
+  );
+  return res.rows[0]?.copies_issued || 0;
+}
+
 async function saveQuiz(exam, ownerUsername, isPublic = false) {
   const quizId = exam.id || `exam-${Date.now()}`;
   const code = exam.code || `#${Math.random().toString(16).slice(2, 6)}`;
@@ -738,11 +777,18 @@ async function saveAttempt(record) {
     const accountUserId = uRes.rows[0]?.id || null;
 
     await client.query(
-      `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       ON CONFLICT (id) DO UPDATE SET score = EXCLUDED.score, correct_count = EXCLUDED.correct_count`,
+      `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, quiz_id, game_session_id, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (id) DO UPDATE SET 
+         score = EXCLUDED.score, 
+         max_score = EXCLUDED.max_score,
+         correct_count = EXCLUDED.correct_count,
+         total_questions = EXCLUDED.total_questions,
+         ratio_pct = EXCLUDED.ratio_pct,
+         formatted_time = EXCLUDED.formatted_time`,
       [
         attemptId, user, accountUserId, user,
+        record.quizId || null, record.gameSessionId || null,
         record.pin || '', record.roomTitle || '', record.examTitle || record.roomTitle || '',
         record.score || 0, record.maxScore || ((record.totalQuestions || 0) * 100),
         record.correctCount || 0, record.totalQuestions || 0, record.ratioPct || 0,
@@ -955,6 +1001,8 @@ module.exports = {
   getPublicQuizzes,
   getPrivateQuizzes,
   getQuizById,
+  getPublicQuizById,
+  incrementQuizCopiesIssued,
   saveQuiz,
   deleteQuiz,
   getUserAttempts,
