@@ -8,12 +8,12 @@ const SESSION_TTL_MS = 7 * DAY_MS;
 const NAME_CHANGE_COOLDOWN_MS = 7 * DAY_MS;
 const PASSWORD_CHANGE_COOLDOWN_MS = 7 * DAY_MS;
 
-const LOGIN_FREE_ATTEMPTS = 5;      // 5 lần sai đầu không bị chặn
-const LOGIN_BASE_WAIT_MS = 30 * 1000; // lần sai thứ 6: chờ 30s, rồi x2 mỗi lần
+const LOGIN_FREE_ATTEMPTS = 15;      // 15 lần sai đầu không bị chặn
+const LOGIN_BASE_WAIT_MS = 15 * 1000; // lần sai kế tiếp chờ 15s
 const LOGIN_MAX_WAIT_MS = DAY_MS;     // cap thời gian chờ ở 24h
 const LOGIN_WINDOW_MS = DAY_MS;       // cửa sổ đếm lỗi reset sau 1 ngày
 
-const REGISTER_LIMIT = 5;             // tối đa 5 tài khoản
+const REGISTER_LIMIT = 50;            // tối đa 50 tài khoản / giờ
 const REGISTER_WINDOW_MS = 60 * 60 * 1000; // mỗi giờ / IP
 
 // In-memory cache synced with PostgreSQL
@@ -275,10 +275,11 @@ function sessionCookieHeader(token, isSecure) {
 }
 
 function clearSessionCookieHeader(isSecure) {
-  if (isSecure) {
-    return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=0`;
-  }
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+  return [
+    `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+  ];
 }
 
 // ── Rate-limiting chống spam đăng nhập (theo IP) ──

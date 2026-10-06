@@ -349,28 +349,13 @@ async function formatQuizWithQuestionsSupabase(quizRow, includeCorrect = true) {
 }
 
 async function getPublicQuizzes() {
-  if (useSupabase()) {
-    try {
-      const { data, error } = await supabase
-        .from('quizzes')
-        .select('*')
-        .eq('is_public', true)
-        .order('created_timestamp', { ascending: false });
-
-      if (error) throw error;
-      const out = [];
-      for (const row of (data || [])) {
-        const qz = await formatQuizWithQuestionsSupabase(row, true);
-        if (qz) out.push(qz);
-      }
-      return out;
-    } catch (e) {
-      console.error('Supabase getPublicQuizzes exception:', e.message);
-    }
-  }
-
-  // PG Fallback
-  const res = await pg.query(`SELECT * FROM quizzes WHERE is_public = true ORDER BY created_timestamp DESC`);
+  const res = await pg.query(
+    `SELECT * FROM quizzes 
+     WHERE is_public = true 
+       AND (deleted_at IS NULL)
+       AND (status IS NULL OR status != 'archived')
+     ORDER BY created_timestamp DESC`
+  );
   const out = [];
   for (const row of res.rows) {
     const qz = await formatQuizWithQuestionsPG(row, true);
@@ -381,28 +366,17 @@ async function getPublicQuizzes() {
 
 async function getPrivateQuizzes(ownerUsername) {
   const lower = String(ownerUsername || '').toLowerCase();
-  if (useSupabase()) {
-    try {
-      const { data, error } = await supabase
-        .from('quizzes')
-        .select('*')
-        .eq('owner_id', lower)
-        .order('created_timestamp', { ascending: false });
+  const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [lower]);
+  const ownerUserId = uRes.rows[0]?.id || null;
 
-      if (error) throw error;
-      const out = [];
-      for (const row of (data || [])) {
-        const qz = await formatQuizWithQuestionsSupabase(row, true);
-        if (qz) out.push(qz);
-      }
-      return out;
-    } catch (e) {
-      console.error('Supabase getPrivateQuizzes exception:', e.message);
-    }
-  }
-
-  // PG Fallback
-  const res = await pg.query(`SELECT * FROM quizzes WHERE LOWER(owner_id) = $1 ORDER BY created_timestamp DESC`, [lower]);
+  const res = await pg.query(
+    `SELECT * FROM quizzes 
+     WHERE (owner_user_id = $1 OR LOWER(owner_id) = $2)
+       AND (deleted_at IS NULL)
+       AND (status IS NULL OR status != 'archived')
+     ORDER BY created_timestamp DESC`,
+    [ownerUserId, lower]
+  );
   const out = [];
   for (const row of res.rows) {
     const qz = await formatQuizWithQuestionsPG(row, true);
@@ -412,23 +386,14 @@ async function getPrivateQuizzes(ownerUsername) {
 }
 
 async function getQuizById(quizId, { includeCorrect = true } = {}) {
-  if (useSupabase()) {
-    try {
-      const { data } = await supabase
-        .from('quizzes')
-        .select('*')
-        .or(`id.eq.${quizId},code.eq.${quizId}`)
-        .maybeSingle();
-
-      if (!data) return null;
-      return await formatQuizWithQuestionsSupabase(data, includeCorrect);
-    } catch (e) {
-      console.error('Supabase getQuizById exception:', e.message);
-    }
-  }
-
-  // PG Fallback
-  const res = await pg.query(`SELECT * FROM quizzes WHERE id = $1 OR code = $1 LIMIT 1`, [quizId]);
+  const res = await pg.query(
+    `SELECT * FROM quizzes 
+     WHERE (id = $1 OR code = $1)
+       AND (deleted_at IS NULL)
+       AND (status IS NULL OR status != 'archived')
+     LIMIT 1`,
+    [quizId]
+  );
   if (res.rows.length === 0) return null;
   return await formatQuizWithQuestionsPG(res.rows[0], includeCorrect);
 }
@@ -439,179 +404,154 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
   const now = Date.now();
   const owner = String(ownerUsername || exam.ownerUsername || 'system').toLowerCase();
 
-  if (useSupabase()) {
-    try {
-      // 1. Lưu Quiz
-      await supabase.from('quizzes').upsert({
-        id: quizId,
-        code,
-        title: exam.title || 'Đề thi trắc nghiệm',
-        description: exam.desc || exam.description || '',
-        subject: exam.subject || '',
-        author: exam.author || '',
-        time_per_q: exam.timePerQ || 15,
-        points_per_q: exam.pointsPerQ || 100,
-        is_public: !!isPublic,
-        owner_id: owner,
-        parent_code: exam.parentCode || '',
-        copies_issued: exam.copiesIssued || 0,
-        shared_by: exam.sharedBy || '',
-        shared_at: exam.sharedAt || '',
-        created_at: exam.createdAt || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        created_timestamp: exam.createdTimestamp || now
-      }, { onConflict: 'id' });
-
-      // 2. Xóa liên kết quiz_questions cũ
-      await supabase.from('quiz_questions').delete().eq('quiz_id', quizId);
-
-      // 3. Question Versioning
-      const qs = Array.isArray(exam.questions) ? exam.questions : [];
-      for (let idx = 0; idx < qs.length; idx++) {
-        const q = qs[idx];
-        let questionId = q.id;
-        if (!questionId || questionId.startsWith('temp-')) {
-          questionId = `q-${quizId}-${idx + 1}-${Date.now().toString(36)}`;
-        }
-
-        await supabase.from('questions').upsert({ id: questionId, owner_id: owner }, { onConflict: 'id' });
-
-        const { data: vList } = await supabase
-          .from('question_versions')
-          .select('*')
-          .eq('question_id', questionId)
-          .order('version', { ascending: false })
-          .limit(1);
-
-        let targetVersionId = null;
-        let targetVersion = 1;
-
-        if (!vList || vList.length === 0) {
-          targetVersion = 1;
-          targetVersionId = `${questionId}-v1`;
-          await supabase.from('question_versions').insert({
-            id: targetVersionId,
-            question_id: questionId,
-            version: targetVersion,
-            content: q.text || '',
-            explanation: q.explanation || '',
-            difficulty: q.difficulty || 'medium',
-            image_url: q.image || ''
-          });
-
-          const choices = Array.isArray(q.choices) ? q.choices : [];
-          for (let cIdx = 0; cIdx < choices.length; cIdx++) {
-            await supabase.from('question_options').insert({
-              id: `${targetVersionId}-opt-${cIdx}`,
-              question_version_id: targetVersionId,
-              content: String(choices[cIdx]),
-              is_correct: (q.correct === cIdx),
-              order_index: cIdx
-            });
-          }
-        } else {
-          const lastV = vList[0];
-          const { data: lastOpts } = await supabase
-            .from('question_options')
-            .select('*')
-            .eq('question_version_id', lastV.id)
-            .order('order_index', { ascending: true });
-
-          const currentChoices = Array.isArray(q.choices) ? q.choices : [];
-          let hasChanged = (lastV.content !== (q.text || '') || (lastV.explanation || '') !== (q.explanation || ''));
-          if (!hasChanged && (lastOpts || []).length !== currentChoices.length) hasChanged = true;
-          if (!hasChanged) {
-            for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
-              const opt = (lastOpts || [])[cIdx];
-              if (!opt || opt.content !== String(currentChoices[cIdx]) || opt.is_correct !== (q.correct === cIdx)) {
-                hasChanged = true;
-                break;
-              }
-            }
-          }
-
-          if (hasChanged) {
-            targetVersion = lastV.version + 1;
-            targetVersionId = `${questionId}-v${targetVersion}`;
-            await supabase.from('question_versions').insert({
-              id: targetVersionId,
-              question_id: questionId,
-              version: targetVersion,
-              content: q.text || '',
-              explanation: q.explanation || '',
-              difficulty: q.difficulty || 'medium',
-              image_url: q.image || ''
-            });
-            for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
-              await supabase.from('question_options').insert({
-                id: `${targetVersionId}-opt-${cIdx}`,
-                question_version_id: targetVersionId,
-                content: String(currentChoices[cIdx]),
-                is_correct: (q.correct === cIdx),
-                order_index: cIdx
-              });
-            }
-          } else {
-            targetVersionId = lastV.id;
-          }
-        }
-
-        // 4. Ánh xạ quiz_questions
-        await supabase.from('quiz_questions').insert({
-          id: `qq-${quizId}-${idx + 1}`,
-          quiz_id: quizId,
-          question_version_id: targetVersionId,
-          order_index: idx,
-          points: exam.pointsPerQ || 100,
-          time_limit: exam.timePerQ || 15
-        });
-      }
-
-      return await getQuizById(quizId, { includeCorrect: true });
-    } catch (e) {
-      console.error('Supabase saveQuiz exception:', e.message);
-      throw e;
-    }
-  }
-
-  // PG Fallback
+  // PG Direct Transaction
   const savedQuizId = await pg.withTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO quizzes (id, code, title, description, subject, author, time_per_q, points_per_q, is_public, owner_id, parent_code, copies_issued, shared_by, shared_at, created_at, updated_at, created_timestamp)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-       ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, updated_at = EXCLUDED.updated_at`,
-      [quizId, code, exam.title || 'Đề thi trắc nghiệm', exam.desc || '', exam.subject || '', exam.author || '', exam.timePerQ || 15, exam.pointsPerQ || 100, !!isPublic, owner, exam.parentCode || '', exam.copiesIssued || 0, exam.sharedBy || '', exam.sharedAt || '', exam.createdAt || new Date().toISOString(), new Date().toISOString(), exam.createdTimestamp || now]
+    // 1. Tra cứu user_id của chủ sở hữu
+    const uRes = await client.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [owner]);
+    const ownerUserId = uRes.rows[0]?.id || null;
+
+    // 2. Kiểm tra Ownership nếu đang cập nhật quiz đã tồn tại
+    const existingRes = await client.query(
+      `SELECT id, owner_id, owner_user_id FROM quizzes WHERE id = $1 LIMIT 1`,
+      [quizId]
     );
 
+    if (existingRes.rows.length > 0) {
+      const ex = existingRes.rows[0];
+      const isOwner = (ownerUserId && ex.owner_user_id === ownerUserId) ||
+                      (ex.owner_id && ex.owner_id.toLowerCase() === owner) ||
+                      owner === 'admin' || owner === 'system';
+      if (!isOwner) {
+        throw new Error('Bạn không có quyền chỉnh sửa đề thi của người dùng khác!');
+      }
+    }
+
+    // 3. Upsert Quiz
+    await client.query(
+      `INSERT INTO quizzes (id, code, title, description, subject, author, time_per_q, points_per_q, is_public, owner_id, owner_user_id, owner_username_snapshot, parent_code, copies_issued, shared_by, shared_at, created_at, updated_at, created_timestamp, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'active')
+       ON CONFLICT (id) DO UPDATE 
+       SET title = EXCLUDED.title, 
+           description = EXCLUDED.description,
+           subject = EXCLUDED.subject,
+           author = EXCLUDED.author,
+           time_per_q = EXCLUDED.time_per_q,
+           points_per_q = EXCLUDED.points_per_q,
+           is_public = EXCLUDED.is_public,
+           parent_code = EXCLUDED.parent_code,
+           updated_at = EXCLUDED.updated_at,
+           status = 'active',
+           deleted_at = NULL`,
+      [
+        quizId, code, exam.title || 'Đề thi trắc nghiệm', exam.desc || exam.description || '',
+        exam.subject || '', exam.author || '', exam.timePerQ || exam.time_per_q || 15,
+        exam.pointsPerQ || exam.points_per_q || 100, !!isPublic, owner, ownerUserId, owner,
+        exam.parentCode || exam.parent_code || '', exam.copiesIssued || exam.copies_issued || 0,
+        exam.sharedBy || exam.shared_by || '', exam.sharedAt || exam.shared_at || '',
+        exam.createdAt || new Date().toISOString(), new Date().toISOString(),
+        exam.createdTimestamp || now
+      ]
+    );
+
+    // 4. Xóa mapping quiz_questions cũ (để cập nhật lại thứ tự)
     await client.query(`DELETE FROM quiz_questions WHERE quiz_id = $1`, [quizId]);
+
+    // 5. Question Versioning BẤT BIẾN (Immutable question versions)
     const qs = Array.isArray(exam.questions) ? exam.questions : [];
     for (let idx = 0; idx < qs.length; idx++) {
       const q = qs[idx];
-      let questionId = q.id || `q-${quizId}-${idx + 1}-${Date.now().toString(36)}`;
-      await client.query(`INSERT INTO questions (id, owner_id) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [questionId, owner]);
-
-      const versionId = `${questionId}-v1`;
-      await client.query(
-        `INSERT INTO question_versions (id, question_id, version, content, explanation, difficulty, image_url)
-         VALUES ($1, $2, 1, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
-        [versionId, questionId, q.text || '', q.explanation || '', q.difficulty || 'medium', q.image || '']
-      );
-
-      const choices = Array.isArray(q.choices) ? q.choices : [];
-      for (let cIdx = 0; cIdx < choices.length; cIdx++) {
-        await client.query(
-          `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
-          [`${versionId}-opt-${cIdx}`, versionId, String(choices[cIdx]), (q.correct === cIdx), cIdx]
-        );
+      let questionId = q.id;
+      if (!questionId || questionId.startsWith('temp-')) {
+        questionId = `q-${quizId}-${idx + 1}-${Date.now().toString(36)}`;
       }
 
       await client.query(
+        `INSERT INTO questions (id, owner_id, owner_user_id, owner_username_snapshot)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO UPDATE SET owner_user_id = COALESCE(EXCLUDED.owner_user_id, questions.owner_user_id)`,
+        [questionId, owner, ownerUserId, owner]
+      );
+
+      // Tra cứu version mới nhất hiện có
+      const lastVRes = await client.query(
+        `SELECT id, version, content, explanation, difficulty, image_url 
+         FROM question_versions 
+         WHERE question_id = $1 
+         ORDER BY version DESC LIMIT 1`,
+        [questionId]
+      );
+
+      let targetVersionId = null;
+      let targetVersion = 1;
+      const currentChoices = Array.isArray(q.choices) ? q.choices : [];
+
+      if (lastVRes.rows.length === 0) {
+        // Chưa có version nào -> Tạo v1
+        targetVersion = 1;
+        targetVersionId = `${questionId}-v1`;
+        await client.query(
+          `INSERT INTO question_versions (id, question_id, version, content, explanation, difficulty, image_url)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [targetVersionId, questionId, targetVersion, q.text || '', q.explanation || '', q.difficulty || 'medium', q.image || '']
+        );
+        for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
+          await client.query(
+            `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
+            [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), (q.correct === cIdx), cIdx]
+          );
+        }
+      } else {
+        const lastV = lastVRes.rows[0];
+        const lastOptsRes = await client.query(
+          `SELECT content, is_correct, order_index FROM question_options WHERE question_version_id = $1 ORDER BY order_index ASC`,
+          [lastV.id]
+        );
+        const lastOpts = lastOptsRes.rows;
+
+        // So sánh xem nội dung hoặc các đáp án có thay đổi không
+        let hasChanged = (lastV.content !== (q.text || '') || (lastV.explanation || '') !== (q.explanation || ''));
+        if (!hasChanged && lastOpts.length !== currentChoices.length) hasChanged = true;
+        if (!hasChanged) {
+          for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
+            const opt = lastOpts[cIdx];
+            if (!opt || opt.content !== String(currentChoices[cIdx]) || opt.is_correct !== (q.correct === cIdx)) {
+              hasChanged = true;
+              break;
+            }
+          }
+        }
+
+        if (hasChanged) {
+          // BẢO ĐẢM TÍNH BẤT BIẾN: KHÔNG SỬA ĐỔI VERSION CŨ! TẠO VERSION MỚI (v2, v3,...)
+          targetVersion = lastV.version + 1;
+          targetVersionId = `${questionId}-v${targetVersion}`;
+          await client.query(
+            `INSERT INTO question_versions (id, question_id, version, content, explanation, difficulty, image_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [targetVersionId, questionId, targetVersion, q.text || '', q.explanation || '', q.difficulty || 'medium', q.image || '']
+          );
+          for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
+            await client.query(
+              `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
+               VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
+              [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), (q.correct === cIdx), cIdx]
+            );
+          }
+        } else {
+          // Tái sử dụng version cũ bất biến
+          targetVersionId = lastV.id;
+        }
+      }
+
+      // 6. Ánh xạ quiz_questions
+      await client.query(
         `INSERT INTO quiz_questions (id, quiz_id, question_version_id, order_index, points, time_limit)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [`qq-${quizId}-${idx + 1}`, quizId, versionId, idx, exam.pointsPerQ || 100, exam.timePerQ || 15]
+        [`qq-${quizId}-${idx + 1}`, quizId, targetVersionId, idx, exam.pointsPerQ || 100, exam.timePerQ || 15]
       );
     }
+
     return quizId;
   });
 
@@ -620,13 +560,18 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
 
 async function deleteQuiz(quizId, ownerUsername) {
   const lower = String(ownerUsername || '').toLowerCase();
-  if (useSupabase()) {
-    try {
-      const { error } = await supabase.from('quizzes').delete().eq('id', quizId);
-      return !error;
-    } catch (e) { return false; }
-  }
-  const res = await pg.query(`DELETE FROM quizzes WHERE id = $1 AND (LOWER(owner_id) = $2 OR $2 = 'admin' OR $2 = 'system') RETURNING id`, [quizId, lower]);
+  const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [lower]);
+  const ownerUserId = uRes.rows[0]?.id || null;
+
+  // SOFT DELETE: Giữ nguyên lịch sử attempts, chỉ ẩn khỏi UI
+  const res = await pg.query(
+    `UPDATE quizzes 
+     SET deleted_at = NOW(), status = 'archived' 
+     WHERE id = $1 
+       AND (owner_user_id = $2 OR LOWER(owner_id) = $3 OR $3 = 'admin' OR $3 = 'system')
+     RETURNING id`,
+    [quizId, ownerUserId, lower]
+  );
   return res.rowCount > 0;
 }
 
@@ -755,18 +700,49 @@ async function saveAttempt(record) {
 
   // PG Fallback
   return await pg.withTransaction(async (client) => {
+    const uRes = await client.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [user]);
+    const accountUserId = uRes.rows[0]?.id || null;
+
     await client.query(
-      `INSERT INTO attempts (id, user_id, pin, room_title, exam_title, score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [attemptId, user, record.pin || '', record.roomTitle || '', record.examTitle || record.roomTitle || '', record.score || 0, record.correctCount || 0, record.totalQuestions || 0, record.ratioPct || 0, record.formattedTime || new Date(now).toLocaleString('vi-VN'), now]
+      `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (id) DO UPDATE SET score = EXCLUDED.score, correct_count = EXCLUDED.correct_count`,
+      [
+        attemptId, user, accountUserId, user,
+        record.pin || '', record.roomTitle || '', record.examTitle || record.roomTitle || '',
+        record.score || 0, record.maxScore || ((record.totalQuestions || 0) * 100),
+        record.correctCount || 0, record.totalQuestions || 0, record.ratioPct || 0,
+        record.formattedTime || new Date(now).toLocaleString('vi-VN'), now
+      ]
     );
+
     const answers = record.answersDetail || record.details || [];
     for (let i = 0; i < answers.length; i++) {
       const ans = answers[i];
+      const qIdx = ans.questionIndex !== undefined ? ans.questionIndex : i;
+      let optionId = ans.selectedOptionId || null;
+
+      // Validate option thuộc đúng question_version nếu có
+      if (optionId && ans.questionVersionId) {
+        const optCheck = await client.query(
+          `SELECT id FROM question_options WHERE id = $1 AND question_version_id = $2 LIMIT 1`,
+          [optionId, ans.questionVersionId]
+        );
+        if (optCheck.rows.length === 0) {
+          optionId = null;
+        }
+      }
+
       await client.query(
-        `INSERT INTO attempt_answers (attempt_id, question_index, user_choice, is_correct, score_awarded)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [attemptId, ans.questionIndex !== undefined ? ans.questionIndex : i, ans.userChoice !== undefined ? ans.userChoice : -1, !!ans.isCorrect, ans.earned || 0]
+        `INSERT INTO attempt_answers (attempt_id, question_index, question_version_id, selected_option_id, user_choice, is_correct, response_time_ms, score_awarded, streak_before, streak_after, answered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (attempt_id, question_index) DO NOTHING`,
+        [
+          attemptId, qIdx, ans.questionVersionId || null, optionId,
+          ans.userChoice !== undefined ? ans.userChoice : -1,
+          !!ans.isCorrect, ans.responseTimeMs || 0, ans.earned || ans.scoreAwarded || 0,
+          ans.streakBefore || 0, ans.streakAfter || ans.streak || 0, now
+        ]
       );
     }
     return { id: attemptId, ...record };

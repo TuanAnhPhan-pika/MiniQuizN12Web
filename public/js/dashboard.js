@@ -214,6 +214,8 @@
     window.location.href = 'create-room.html';
   }
 
+  let currentAuthUsername = '';
+
   /* ── Auth: gate trang, hiển thị user, đăng xuất, đổi tên/mật khẩu ── */
   (async function checkAuth() {
     try {
@@ -227,6 +229,7 @@
       const u = data.user || data;
       const dName = u.displayName || u.username || 'Thầy Cô';
       const uName = u.username || '';
+      currentAuthUsername = uName;
       document.getElementById('user-chip-label').textContent = uName ? `${dName} (${uName})` : dName;
     } catch (err) {
       window.location.href = 'index.html?needLogin=1';
@@ -542,10 +545,13 @@
   async function handleLogout(e) {
     if (e) e.preventDefault();
     if (window.MQC_Auth) {
-      window.MQC_Auth.clearToken();
+      window.MQC_Auth.clearToken(currentAuthUsername);
+    }
+    if (window.MQC_Storage && currentAuthUsername) {
+      window.MQC_Storage.clearUser(currentAuthUsername);
     }
     try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (err) {}
-    window.location.href = 'index.html';
+    window.location.href = 'index.html?needLogin=1';
   }
 
   function openSettingsModal() {

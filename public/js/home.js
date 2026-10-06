@@ -317,6 +317,16 @@
     }
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   /* ── Tự động nhận diện user đã đăng nhập & hiển thị nút Bảng điều khiển / Đăng nhập ── */
   let currentUser = null;
 
@@ -325,19 +335,26 @@
     if (!wrap) return;
     if (user && (user.username || user.displayName)) {
       const dName = (user.displayName || user.username || 'Bạn').slice(0, 15);
+      const uName = (user.username || '').toLowerCase();
       wrap.innerHTML = `
-        <div style="display:inline-flex; align-items:center; gap:8px;">
-          <a href="dashboard.html" class="btn-login" style="background:#0284c7; color:#fff; border:none; text-decoration:none; font-weight:800; display:inline-flex; align-items:center; gap:6px; padding:7px 16px; border-radius:10px; box-shadow:0 3px 8px rgba(2,132,199,0.3);" title="Vào Bảng điều khiển">
+        <div style="display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,0.18); padding:6px 12px; border-radius:20px; font-weight:700; font-size:0.85rem;" title="Tài khoản: ${escapeHtml(uName)}">
+            <span>👨‍🏫 ${escapeHtml(dName)}</span>
+          </div>
+          <a href="dashboard.html" class="btn-login" style="background:#0284c7; color:#fff; border:none; text-decoration:none; font-weight:800; display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:10px; box-shadow:0 3px 8px rgba(2,132,199,0.3);" title="Vào Bảng điều khiển">
             <span>📊 Bảng điều khiển</span>
           </a>
-          <button type="button" onclick="logoutOnHome()" class="btn-login" style="background:#ef4444; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Đăng xuất khỏi ${dName}">
+          <button type="button" onclick="openLoginModal('register')" class="btn-login" style="background:#10b981; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Tạo tài khoản mới hoặc đổi tài khoản">
+            <span>➕ Đổi TK</span>
+          </button>
+          <button type="button" onclick="logoutOnHome()" class="btn-login" style="background:#ef4444; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Đăng xuất khỏi ${escapeHtml(dName)}">
             <span>Đăng xuất</span>
           </button>
         </div>
       `;
     } else {
       wrap.innerHTML = `
-        <button class="btn-login" onclick="openLoginModal('login')">Đăng nhập / Đăng ký</button>
+        <button class="btn-login" onclick="openLoginModal('login')">🔑 Đăng nhập / Đăng ký</button>
         <div class="tooltip">Đăng nhập để sử dụng thêm nhiều tính năng hơn</div>
       `;
     }
@@ -373,14 +390,20 @@
   checkAuthOnHome();
 
   window.logoutOnHome = async function() {
-    if (window.MQC_Auth) {
-      window.MQC_Auth.clearToken();
-    }
+    const prevUsername = currentUser ? (currentUser.username || '') : '';
     currentUser = null;
+    if (window.MQC_Auth) {
+      window.MQC_Auth.clearToken(prevUsername);
+    }
+    if (window.MQC_Storage && prevUsername) {
+      window.MQC_Storage.clearUser(prevUsername);
+    }
     renderHeaderAuth(null);
     try {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } catch(e) {}
+    openLoginModal('login');
+    showAuthMessage('error-login', 'Đã đăng xuất thành công.', true);
   };
 
   async function handleRegister() {

@@ -493,13 +493,150 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // [POST] /api/history - Ghi lại kết quả bài thi sau khi hoàn thành
+  // [POST] /api/history - Ghi lại kết quả bài thi sau khi hoàn thành (Server-Authoritative)
   if (method === 'POST' && pathname === '/api/history') {
     try {
       const body = await readJsonBody(req);
       const sessionUser = getSessionUser(req);
       const username = sessionUser ? sessionUser.username : (body.username || 'guest');
-      const saved = await db.saveAttempt({ ...body, username });
+      const pin = body.pin || '';
+
+      let authoritativeRecord = null;
+
+      // 1. Multiplayer: Tạo history từ server room state nếu phòng tồn tại
+      const rawRoom = pin ? roomsManager.getRawRoom(pin) : null;
+      if (rawRoom) {
+        const playerId = body.playerId || body.id;
+        const playerToken = body.playerToken || req.headers['x-player-token'];
+        const player = (playerId && playerToken ? roomsManager.verifyPlayer(rawRoom, playerId, playerToken) : null) ||
+                       (rawRoom.players || []).find(p => (playerId && p.id === playerId) || (sessionUser && p.nick.toLowerCase() === sessionUser.username.toLowerCase()));
+
+        if (player) {
+          const questions = rawRoom.questions || [];
+          let serverScore = Number(player.score) || 0;
+          let correctCount = 0;
+          const answersDetail = [];
+
+          for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+            const q = questions[qIdx];
+            const ansRecord = rawRoom.answers && rawRoom.answers[qIdx] && rawRoom.answers[qIdx][player.id];
+            const isCorrect = ansRecord ? !!ansRecord.isCorrect : false;
+            if (isCorrect) correctCount++;
+            answersDetail.push({
+              questionIndex: qIdx,
+              questionVersionId: q.versionId || null,
+              userChoice: ansRecord ? ansRecord.choice : -1,
+              isCorrect: isCorrect,
+              earned: ansRecord ? ansRecord.scoreAwarded : 0,
+              scoreAwarded: ansRecord ? ansRecord.scoreAwarded : 0,
+              responseTimeMs: ansRecord ? ansRecord.responseTimeMs : 0,
+              streakBefore: ansRecord ? ansRecord.streakBefore : 0,
+              streakAfter: ansRecord ? ansRecord.streakAfter : 0,
+            });
+          }
+
+          const totalQuestions = questions.length;
+          const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+
+          authoritativeRecord = {
+            username,
+            quizId: rawRoom.examId || null,
+            pin: rawRoom.pin,
+            roomTitle: rawRoom.title,
+            examTitle: rawRoom.title,
+            score: serverScore,
+            maxScore: totalQuestions * 100,
+            correctCount,
+            wrongCount: totalQuestions - correctCount,
+            totalQuestions,
+            ratioPct,
+            accuracyPct: ratioPct,
+            formattedTime: new Date().toLocaleString('vi-VN'),
+            details: answersDetail,
+            answersDetail,
+          };
+        }
+      }
+
+      // 2. Solo Quiz / Custom Exam: Server tự chấm lại theo Database Quiz
+      if (!authoritativeRecord) {
+        const quizId = body.quizId || body.examId;
+        let quiz = quizId ? await db.getQuizById(quizId, { includeCorrect: true }) : null;
+        const incomingAnswers = Array.isArray(body.answersDetail) ? body.answersDetail : (Array.isArray(body.details) ? body.details : []);
+
+        if (quiz && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+          let calculatedScore = 0;
+          let correctCount = 0;
+          const totalQuestions = quiz.questions.length;
+          const answersDetail = [];
+
+          for (let i = 0; i < totalQuestions; i++) {
+            const q = quiz.questions[i];
+            const ans = incomingAnswers[i] || {};
+            const userChoice = typeof ans.userChoice === 'number' ? ans.userChoice : (typeof ans.choice === 'number' ? ans.choice : -1);
+            const isCorrect = (typeof q.correct === 'number' && userChoice === q.correct);
+            const points = q.points || quiz.pointsPerQ || 100;
+            const earned = isCorrect ? points : 0;
+            if (isCorrect) correctCount++;
+            calculatedScore += earned;
+
+            answersDetail.push({
+              questionIndex: i,
+              questionVersionId: q.versionId || null,
+              userChoice,
+              isCorrect,
+              earned,
+              scoreAwarded: earned,
+              responseTimeMs: Number(ans.responseTimeMs) || 0,
+              streakBefore: Number(ans.streakBefore) || 0,
+              streakAfter: Number(ans.streakAfter) || 0,
+            });
+          }
+
+          const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+          authoritativeRecord = {
+            username,
+            quizId: quiz.id,
+            pin: body.pin || '',
+            roomTitle: body.roomTitle || quiz.title,
+            examTitle: quiz.title,
+            score: calculatedScore,
+            maxScore: totalQuestions * 100,
+            correctCount,
+            wrongCount: totalQuestions - correctCount,
+            totalQuestions,
+            ratioPct,
+            accuracyPct: ratioPct,
+            formattedTime: new Date().toLocaleString('vi-VN'),
+            details: answersDetail,
+            answersDetail,
+          };
+        } else {
+          // Fallback: sanitize và kiểm tra dữ liệu bài nộp
+          const totalQuestions = Number(body.totalQuestions) || incomingAnswers.length || 0;
+          const correctCount = incomingAnswers.filter(a => !!a.isCorrect).length;
+          const calculatedScore = incomingAnswers.reduce((sum, a) => sum + (Number(a.earned || a.scoreAwarded) || 0), 0);
+          authoritativeRecord = {
+            username,
+            quizId: body.quizId || null,
+            pin: body.pin || '',
+            roomTitle: String(body.roomTitle || 'Bài làm trắc nghiệm').slice(0, 100),
+            examTitle: String(body.examTitle || body.roomTitle || 'Bài làm trắc nghiệm').slice(0, 100),
+            score: calculatedScore,
+            maxScore: totalQuestions * 100,
+            correctCount,
+            wrongCount: Math.max(0, totalQuestions - correctCount),
+            totalQuestions,
+            ratioPct: totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0,
+            accuracyPct: totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0,
+            formattedTime: new Date().toLocaleString('vi-VN'),
+            details: incomingAnswers,
+            answersDetail: incomingAnswers,
+          };
+        }
+      }
+
+      const saved = await db.saveAttempt(authoritativeRecord);
       sendJSON(res, 200, { success: true, historyItem: saved });
       return;
     } catch (err) {
@@ -917,7 +1054,15 @@ const server = http.createServer(async (req, res) => {
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
     const pin = match[1];
     const body = await readJsonBody(req);
-    roomsManager.removePlayer(pin, { id: body.id, nick: body.nick });
+    const sessionUser = getSessionUser(req);
+    const rawRoom = roomsManager.getRawRoom(pin);
+    const isHost = sessionUser && rawRoom && (sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase());
+    roomsManager.removePlayer(pin, {
+      id: body.id || body.playerId,
+      playerToken: body.playerToken || req.headers['x-player-token'],
+      nick: body.nick,
+      isHost: !!isHost,
+    });
     sendJSON(res, 200, { success: true });
     return;
   }
@@ -936,6 +1081,7 @@ const server = http.createServer(async (req, res) => {
       id: body.id,
       nick: body.nick || (sessionUser ? sessionUser.username : 'Thí sinh'),
       av: body.av || '01',
+      playerToken: body.playerToken || req.headers['x-player-token'],
       isHost: !!isHost,
     });
 
@@ -947,7 +1093,10 @@ const server = http.createServer(async (req, res) => {
     sendJSON(res, 200, {
       success: true,
       player: result.player,
-      room: roomsManager.getRoomForClient(pin, isHost)
+      players: result.room ? result.room.players : [],
+      room: result.room || roomsManager.getRoomForClient(pin, isHost),
+      title: (result.room && result.room.title) || (rawRoom && rawRoom.title) || '',
+      status: (result.room && result.room.status) || (rawRoom && rawRoom.status) || 'waiting'
     });
     return;
   }
@@ -971,6 +1120,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readJsonBody(req);
     const result = roomsManager.submitAnswer(pin, {
       playerId: body.id || body.playerId,
+      playerToken: body.playerToken || req.headers['x-player-token'],
       nick: body.nick,
       qIdx: Number(body.qIdx) || 0,
       choice: Number(body.choice),
@@ -980,13 +1130,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // [POST] /api/rooms/:pin/score - Cập nhật điểm và lấy leaderboard
+  // [POST] /api/rooms/:pin/score - Cập nhật avatar/metadata và lấy leaderboard (không nhận score)
   if (method === 'POST' && pathname.includes('/score')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/score$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
     const pin = match[1];
     const body = await readJsonBody(req);
-    const result = roomsManager.updatePlayerScore(pin, body);
+    const result = roomsManager.updatePlayerMetadata(pin, {
+      playerId: body.id || body.playerId,
+      playerToken: body.playerToken || req.headers['x-player-token'],
+      av: body.av
+    });
     sendJSON(res, 200, result);
     return;
   }

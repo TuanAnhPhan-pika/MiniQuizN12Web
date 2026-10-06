@@ -39,6 +39,7 @@ if (!myPlayerId) {
   myPlayerId = 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
   sessionStorage.setItem('mqc_my_player_id', myPlayerId);
 }
+let myPlayerToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || sessionStorage.getItem('mqc_my_player_token') || '';
 
 // Bảng xếp hạng thí sinh thực tế đồng bộ từ server
 let liveLeaderboard = [
@@ -145,8 +146,26 @@ async function syncRoomFromServer() {
         }
       }
     }
+    if (!myPlayerToken && PIN && PIN !== '---') {
+      try {
+        const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR })
+        });
+        if (jRes.ok) {
+          const jData = await jRes.json();
+          if (jData.player && jData.player.playerToken) {
+            myPlayerToken = jData.player.playerToken;
+            sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
+            sessionStorage.setItem('mqc_my_player_token', myPlayerToken);
+          }
+        }
+      } catch (e) {}
+    }
+
     if (!isFinished) {
-      // Gửi điểm khởi tạo 0 lên server
+      // Đồng bộ thông tin thí sinh lên server
       await postAndFetchLeaderboard(0, 0);
     }
   } catch (err) {}
@@ -158,13 +177,17 @@ async function postAndFetchLeaderboard(qIdx, score) {
     try {
       const res = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/score`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-player-token': myPlayerToken
+        },
         body: JSON.stringify({
           id: myPlayerId,
+          playerId: myPlayerId,
+          playerToken: myPlayerToken,
           nick: NICKNAME,
           av: AVATAR,
-          currentQ: qIdx,
-          score: Math.round(score)
+          currentQ: qIdx
         })
       });
       if (res.ok) {
@@ -404,9 +427,14 @@ function selectAnswer(choiceIdx) {
   if (PIN && PIN !== '---') {
     fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-token': myPlayerToken
+      },
       body: JSON.stringify({
         id: myPlayerId,
+        playerId: myPlayerId,
+        playerToken: myPlayerToken,
         nick: NICKNAME,
         qIdx: currentQ,
         choice: choiceIdx,
@@ -756,6 +784,8 @@ async function saveHistoryRecord(sorted, yourRank) {
 
   const payload = {
     pin: PIN,
+    playerId: myPlayerId,
+    playerToken: myPlayerToken,
     roomTitle: EXAM_TITLE,
     score: Math.round(totalScore),
     maxScore: totalQ * 100,
@@ -770,7 +800,10 @@ async function saveHistoryRecord(sorted, yourRank) {
   try {
     await fetch('/api/history', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-token': myPlayerToken
+      },
       credentials: 'same-origin',
       body: JSON.stringify(payload)
     });

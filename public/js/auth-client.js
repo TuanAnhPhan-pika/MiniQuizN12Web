@@ -6,29 +6,49 @@
  */
 (function () {
   const TOKEN_KEY = 'mqc_session_token';
+  let memoryToken = '';
 
   function getToken() {
     try {
-      return localStorage.getItem(TOKEN_KEY) || '';
-    } catch (e) {
-      return '';
-    }
+      const t = localStorage.getItem(TOKEN_KEY);
+      if (t) return t;
+    } catch (e) {}
+    try {
+      const st = sessionStorage.getItem(TOKEN_KEY);
+      if (st) return st;
+    } catch (e) {}
+    return memoryToken || '';
   }
 
   function setToken(tok) {
+    memoryToken = tok ? String(tok).trim() : '';
     try {
-      if (tok) {
-        localStorage.setItem(TOKEN_KEY, String(tok).trim());
+      if (memoryToken) {
+        localStorage.setItem(TOKEN_KEY, memoryToken);
       } else {
         localStorage.removeItem(TOKEN_KEY);
       }
     } catch (e) {}
+    try {
+      if (memoryToken) {
+        sessionStorage.setItem(TOKEN_KEY, memoryToken);
+      } else {
+        sessionStorage.removeItem(TOKEN_KEY);
+      }
+    } catch (e) {}
   }
 
-  function clearToken() {
+  function clearToken(username) {
+    memoryToken = '';
     try {
       localStorage.removeItem(TOKEN_KEY);
     } catch (e) {}
+    try {
+      sessionStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+    if (username && window.MQC_Storage && window.MQC_Storage.clearUser) {
+      window.MQC_Storage.clearUser(username);
+    }
   }
 
   // Intercept window.fetch so every API call automatically carries the auth token

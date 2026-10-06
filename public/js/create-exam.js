@@ -171,12 +171,14 @@
       });
     }
 
-    // 3. Khởi tạo form trắng mặc định (không trỏ vào đề nào)
-    loadDraftOrInit();
-
-    // 4. Kiểm tra đăng nhập và đồng bộ dữ liệu ngầm
+    // 3. Kiểm tra đăng nhập trước tiên để xác định đúng tài khoản
     if (!(await checkAuthAndGetUser())) return;
+
+    // 4. Đồng bộ Private Storage từ server (DB là Source of Truth)
     await syncPrivateStorageFromServer();
+
+    // 5. Khởi tạo form trắng mặc định (không trỏ vào đề nào)
+    loadDraftOrInit();
     renderSavedExamsList();
     if (activeTab === 'library') {
       await renderLibraryTab();
@@ -186,14 +188,45 @@
     renderShareTab();
   });
 
-  /* ── Đồng bộ Private Storage từ server ── */
+  function getUserStorageKey(baseKey, username) {
+    return `${baseKey}_${String(username || CURRENT_USER || 'anonymous').toLowerCase()}`;
+  }
+
+  let memoryUserExams = null;
+
+  function getExamsStorageKey() {
+    return getUserStorageKey('mqc_custom_exams', CURRENT_USER);
+  }
+
+  function getSavedExams() {
+    if (memoryUserExams !== null) return memoryUserExams;
+    try {
+      const key = getExamsStorageKey();
+      memoryUserExams = JSON.parse(localStorage.getItem(key) || '[]');
+      return memoryUserExams;
+    } catch(e) {
+      return [];
+    }
+  }
+
+  function setSavedExams(exams) {
+    memoryUserExams = Array.isArray(exams) ? exams : [];
+    try {
+      const key = getExamsStorageKey();
+      localStorage.setItem(key, JSON.stringify(memoryUserExams));
+      localStorage.removeItem('mqc_custom_exams'); // Dọn dẹp key cũ không có scope
+    } catch(e) {}
+  }
+
+  /* ── Đồng bộ Private Storage từ server (DB là source of truth) ── */
   async function syncPrivateStorageFromServer() {
     try {
       const res = await fetch('/api/storage/private', { credentials: 'same-origin' });
       if (res.ok) {
         const data = await res.json();
-        if (data.success && Array.isArray(data.exams) && data.exams.length > 0) {
-          localStorage.setItem('mqc_custom_exams', JSON.stringify(data.exams));
+        if (data.success && Array.isArray(data.exams)) {
+          setSavedExams(data.exams);
+          renderSavedExamsList();
         }
       }
     } catch (e) {
@@ -217,7 +250,7 @@
     });
 
     if (modified) {
-      localStorage.setItem('mqc_custom_exams', JSON.stringify(saved));
+      setSavedExams(saved);
     }
 
     // Mặc định ở trạng thái trắng, không trỏ vào bất kỳ đề thi nào
@@ -1088,7 +1121,7 @@
         if (data.success && data.exam) {
           let exams = getSavedExams();
           exams.unshift(data.exam);
-          localStorage.setItem('mqc_custom_exams', JSON.stringify(exams));
+          setSavedExams(exams);
           renderSavedExamsList();
           if (showNotification) showToast('✅ Đã lưu đề "' + data.exam.title + '" vào kho cá nhân của bạn!');
           return data.exam;
@@ -1466,7 +1499,7 @@
     if (confirm('Bạn có chắc muốn xóa đề thi đã lưu này khỏi Private Storage?')) {
       let exams = getSavedExams();
       exams = exams.filter(e => e.id !== examId);
-      localStorage.setItem('mqc_custom_exams', JSON.stringify(exams));
+      setSavedExams(exams);
 
       fetch('/api/storage/private/' + encodeURIComponent(examId), {
         method: 'DELETE',
@@ -1483,14 +1516,6 @@
   }
 
   /* ── STORAGE HELPERS ── */
-  function getSavedExams() {
-    try {
-      return JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
-    } catch(e) {
-      return [];
-    }
-  }
-
   function sortExamsByCode(exams) {
     return (exams || []).slice().sort((a, b) => {
       const codeA = String(a.code || '').trim();
@@ -1553,7 +1578,7 @@
     } else {
       exams.unshift(exam);
     }
-    localStorage.setItem('mqc_custom_exams', JSON.stringify(exams));
+    setSavedExams(exams);
 
     // Gọi API lưu lên server Private Storage
     try {

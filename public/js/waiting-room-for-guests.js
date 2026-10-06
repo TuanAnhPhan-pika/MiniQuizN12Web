@@ -167,10 +167,18 @@
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
+          if (data.player && data.player.playerToken) {
+            sessionStorage.setItem('mqc_my_player_token_' + PIN, data.player.playerToken);
+            sessionStorage.setItem('mqc_my_player_token', data.player.playerToken);
+          }
+          if (data.player && data.player.id) {
+            myPlayerId = data.player.id;
+            sessionStorage.setItem('mqc_my_player_id', myPlayerId);
+          }
           if (data.title) {
             document.getElementById('room-title-display').textContent = data.title;
           }
-          currentPlayers = data.players || [];
+          currentPlayers = data.players || (data.room && data.room.players) || [];
           renderPlayers(currentPlayers);
           syncLocalRoomState(currentPlayers, data.status);
         }

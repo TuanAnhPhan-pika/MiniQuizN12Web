@@ -151,17 +151,25 @@
       selectedExamId = targetExamId;
     }
 
+    const userExamsKey = window.getUserStorageKey
+      ? window.getUserStorageKey('mqc_custom_exams', (currentUser && currentUser.username) || '')
+      : `mqc_custom_exams_${((currentUser && currentUser.username) || 'anonymous').toLowerCase()}`;
+
     try {
       const res = await fetch('/api/storage/private', { credentials: 'same-origin' });
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.exams)) {
           userExams = data.exams;
+          try {
+            localStorage.setItem(userExamsKey, JSON.stringify(userExams));
+            localStorage.removeItem('mqc_custom_exams');
+          } catch(e) {}
         }
       }
     } catch (e) {
       try {
-        userExams = JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
+        userExams = JSON.parse(localStorage.getItem(userExamsKey) || '[]');
       } catch (err) {}
     }
 
@@ -177,10 +185,10 @@
       selectedExamId = assignedExam.id;
     }
 
-    // Nếu có targetExamId mà chưa có trong danh sách, nạp từ localStorage
+    // Nếu có targetExamId mà chưa có trong danh sách, nạp từ cache của user
     if (targetExamId && (!userExams || !userExams.some(e => e.id === targetExamId || e.code === targetExamId))) {
       try {
-        const localExams = JSON.parse(localStorage.getItem('mqc_custom_exams') || '[]');
+        const localExams = JSON.parse(localStorage.getItem(userExamsKey) || '[]');
         const matchExam = localExams.find(e => e.id === targetExamId || e.code === targetExamId);
         if (matchExam) {
           if (!userExams) userExams = [];
@@ -399,12 +407,18 @@
     if (modal) modal.classList.remove('show');
   }
 
+  function getCreatedRoomsKey() {
+    const u = (currentUser && currentUser.username) || '';
+    return window.getUserStorageKey ? window.getUserStorageKey('mqc_created_rooms', u) : `mqc_created_rooms_${u.toLowerCase()}`;
+  }
+
   /* ── Load danh sách phòng đã tạo & Áp dụng quy tắc dọn dẹp phòng đã hủy/kết thúc/hết hạn ── */
   function loadCreatedRooms() {
     const now = Date.now();
     let raw = [];
+    const roomsKey = getCreatedRoomsKey();
     try {
-      raw = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      raw = JSON.parse(localStorage.getItem(roomsKey) || '[]');
     } catch (e) {
       raw = [];
     }
@@ -434,7 +448,8 @@
       }
     });
 
-    localStorage.setItem('mqc_created_rooms', JSON.stringify(survivingRooms));
+    localStorage.setItem(roomsKey, JSON.stringify(survivingRooms));
+    try { localStorage.removeItem('mqc_created_rooms'); } catch(e) {}
     if (customRoomsChanged) {
       localStorage.setItem('mqc_custom_rooms', JSON.stringify(activeCustomRooms));
     }
@@ -476,9 +491,9 @@
     }
     if (hasChanges) {
       // Re-filter local list
-      let raw = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      let raw = JSON.parse(localStorage.getItem(getCreatedRoomsKey()) || '[]');
       raw = raw.filter(r => localStorage.getItem(`mqc_room_status_${r.pin}`) !== 'cancelled');
-      localStorage.setItem('mqc_created_rooms', JSON.stringify(raw));
+      localStorage.setItem(getCreatedRoomsKey(), JSON.stringify(raw));
       createdRooms = raw;
       renderCreatedRoomsList();
     }
@@ -645,7 +660,7 @@
     if (!room) return;
 
     room.isLocked = !room.isLocked;
-    localStorage.setItem('mqc_created_rooms', JSON.stringify(createdRooms));
+    localStorage.setItem(getCreatedRoomsKey(), JSON.stringify(createdRooms));
 
     try {
       const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
@@ -678,7 +693,7 @@
 
     // 1. Xóa khỏi createdRooms
     createdRooms = createdRooms.filter(r => r.pin !== pin);
-    localStorage.setItem('mqc_created_rooms', JSON.stringify(createdRooms));
+    localStorage.setItem(getCreatedRoomsKey(), JSON.stringify(createdRooms));
 
     // 2. Xóa khỏi customRooms & phát tín hiệu hủy phòng cho các máy/tab đang đợi
     try {
@@ -792,7 +807,7 @@
     // 3. Thêm vào danh sách phòng đã tạo của giáo viên
     let rawRooms = [];
     try {
-      rawRooms = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      rawRooms = JSON.parse(localStorage.getItem(getCreatedRoomsKey()) || '[]');
     } catch (e) {}
 
     rawRooms.unshift({
@@ -803,7 +818,7 @@
       createdAt: now
     });
 
-    localStorage.setItem('mqc_created_rooms', JSON.stringify(rawRooms));
+    localStorage.setItem(getCreatedRoomsKey(), JSON.stringify(rawRooms));
 
     // 4. Cập nhật danh sách & chọn cố định phòng mới tạo (hiển thị ngay mã PIN và QR)
     loadCreatedRooms();
