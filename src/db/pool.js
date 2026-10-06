@@ -9,6 +9,7 @@ function getPoolConfig() {
       ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
       max: 20,
       idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
     };
   }
 
@@ -23,6 +24,7 @@ function getPoolConfig() {
     database: process.env.SQL_DB_NAME || process.env.PGDATABASE || 'postgres',
     max: 20,
     idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
   };
 }
 

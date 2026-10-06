@@ -810,7 +810,7 @@ async function saveHistoryRecord(sorted, yourRank) {
   };
 
   try {
-    await fetch('/api/history', {
+    const response = await fetch('/api/history', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -819,7 +819,9 @@ async function saveHistoryRecord(sorted, yourRank) {
       credentials: 'same-origin',
       body: JSON.stringify(payload)
     });
+    if (!response.ok) throw new Error('History save failed: HTTP ' + response.status);
   } catch (err) {
+    historySaved = false;
     console.warn('Lưu lịch sử không thành công:', err);
   }
 }

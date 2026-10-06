@@ -110,6 +110,7 @@ async function initAuth() {
     console.log(`🔐 [Auth] Đã nạp ${memoryUsers.size} người dùng và ${memorySessions.size} phiên làm việc từ PostgreSQL!`);
   } catch (err) {
     console.error('Lỗi nạp Auth từ Database:', err.message);
+    throw err;
   }
 }
 

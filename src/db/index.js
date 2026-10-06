@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const { createClient } = require('@supabase/supabase-js');
 const pg = require('./pool.js');
 
@@ -18,16 +19,8 @@ if (supabaseUrl && supabaseKey) {
 }
 
 const DATA_BACKEND = process.env.DATA_BACKEND || 'pg';
-
-function useSupabase() {
-  // Kiến trúc runtime: Ưu tiên PostgreSQL (Node.js -> pg -> Supabase PostgreSQL)
-  if (DATA_BACKEND === 'pg') return false;
-  return !!(supabase && supabaseUrl && supabaseKey);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 1. USERS, PROFILES & SESSIONS
-// ═══════════════════════════════════════════════════════════════════════════
+if (DATA_BACKEND !== 'pg') throw new Error('Runtime CRUD requires DATA_BACKEND=pg');
+function useSupabase() { return false; } // Never fallback from pg to REST.
 
 async function findUserByUsername(username) {
   const lower = String(username || '').toLowerCase();
@@ -412,7 +405,6 @@ async function getQuizById(quizId, { includeCorrect = false, requestingUser = nu
     const isOwner = (reqUid && row.owner_user_id === reqUid) ||
                     (row.owner_id && row.owner_id.toLowerCase() === reqUname) ||
                     (row.shared_by && row.shared_by.toLowerCase() === reqUname) ||
-                    reqUname === 'admin' ||
                     (typeof requestingUser === 'object' && requestingUser.role === 'admin');
     if (!isOwner) {
       return null;
@@ -478,8 +470,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
     if (existingRes.rows.length > 0) {
       const ex = existingRes.rows[0];
       const isOwner = (ownerUserId && ex.owner_user_id === ownerUserId) ||
-                      (ex.owner_id && ex.owner_id.toLowerCase() === owner) ||
-                      owner === 'admin' || owner === 'system';
+                      (ex.owner_id && ex.owner_id.toLowerCase() === owner);
       if (!isOwner) {
         throw new Error('Bạn không có quyền chỉnh sửa đề thi của người dùng khác!');
       }
@@ -625,10 +616,10 @@ async function deleteQuiz(quizId, userOrUsername) {
   if (userOrUsername && typeof userOrUsername === 'object') {
     lower = String(userOrUsername.username || '').toLowerCase();
     ownerUserId = userOrUsername.userId || userOrUsername.id || null;
-    userIsAdmin = userOrUsername.role === 'admin' || lower === 'admin';
+    userIsAdmin = userOrUsername.role === 'admin';
   } else {
     lower = String(userOrUsername || '').toLowerCase();
-    userIsAdmin = lower === 'admin';
+    userIsAdmin = false;
   }
 
   if (!ownerUserId && lower) {
@@ -730,51 +721,10 @@ async function saveAttempt(record) {
   const now = record.createdAt || record.finishedAt || Date.now();
   const user = String(record.username || record.userId || 'guest').toLowerCase();
 
-  if (useSupabase()) {
-    try {
-      await supabase.from('attempts').insert({
-        id: attemptId,
-        user_id: user,
-        quiz_id: record.quizId || null,
-        game_session_id: record.gameSessionId || null,
-        pin: record.pin || '',
-        room_title: record.roomTitle || '',
-        exam_title: record.examTitle || record.roomTitle || '',
-        score: record.score || 0,
-        max_score: record.maxScore || ((record.totalQuestions || 0) * 100),
-        correct_count: record.correctCount || 0,
-        wrong_count: record.wrongCount || 0,
-        total_questions: record.totalQuestions || 0,
-        ratio_pct: record.ratioPct !== undefined ? record.ratioPct : (record.accuracyPct || 0),
-        total_time_ms: record.totalTimeMs || 0,
-        formatted_time: record.formattedTime || new Date(now).toLocaleString('vi-VN'),
-        created_at: now
-      });
-
-      const answers = record.answersDetail || record.details || [];
-      for (let i = 0; i < answers.length; i++) {
-        const ans = answers[i];
-        await supabase.from('attempt_answers').insert({
-          attempt_id: attemptId,
-          question_index: ans.questionIndex !== undefined ? ans.questionIndex : i,
-          user_choice: ans.userChoice !== undefined ? ans.userChoice : -1,
-          is_correct: !!ans.isCorrect,
-          response_time_ms: ans.responseTimeMs || 0,
-          score_awarded: ans.earned || ans.scoreAwarded || 0,
-          streak_before: ans.streakBefore || 0,
-          streak_after: ans.streakAfter || ans.streak || 0
-        });
-      }
-      return { id: attemptId, ...record };
-    } catch (e) {
-      console.error('Supabase saveAttempt error:', e.message);
-    }
-  }
-
-  // PG Fallback
   return await pg.withTransaction(async (client) => {
     const uRes = await client.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [user]);
-    const accountUserId = uRes.rows[0]?.id || null;
+    const accountUserId = Object.prototype.hasOwnProperty.call(record, 'accountUserId')
+      ? record.accountUserId : (uRes.rows[0]?.id || null);
 
     await client.query(
       `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, quiz_id, game_session_id, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
@@ -840,47 +790,6 @@ async function saveHostedGameSession(hostUsername, sessionRecord) {
   const stats = sessionRecord.stats || {};
   const candidates = stats.candidatesMatrix || [];
 
-  if (useSupabase()) {
-    try {
-      await supabase.from('game_sessions').upsert({
-        id: sessionId,
-        quiz_id: sessionRecord.quizId || null,
-        host_id: host,
-        room_code: sessionRecord.pin || '',
-        room_title: sessionRecord.roomTitle || sessionRecord.title || 'Phòng thi trực tuyến',
-        status: 'finished',
-        capacity: sessionRecord.capacity || 40,
-        total_players: candidates.length,
-        started_at: sessionRecord.createdAt || (now - 60000),
-        ended_at: now,
-        formatted_time: sessionRecord.formattedTime || new Date(now).toLocaleString('vi-VN'),
-        stats: stats,
-        created_at: sessionRecord.createdAt || now
-      }, { onConflict: 'id' });
-
-      for (let i = 0; i < candidates.length; i++) {
-        const c = candidates[i];
-        await supabase.from('game_players').upsert({
-          id: c.id || `p-${sessionId}-${i + 1}`,
-          game_session_id: sessionId,
-          nickname: c.nick || 'Thí sinh',
-          avatar: c.av || '01',
-          final_score: c.score || 0,
-          rank: i + 1,
-          correct_count: c.correctCount || 0,
-          wrong_count: (c.totalQuestions || 0) - (c.correctCount || 0),
-          joined_at: sessionRecord.createdAt || now,
-          finished_at: now
-        }, { onConflict: 'id' });
-      }
-
-      return { id: sessionId, ...sessionRecord };
-    } catch (e) {
-      console.error('Supabase saveHostedGameSession error:', e.message);
-    }
-  }
-
-  // PG Fallback
   return await pg.withTransaction(async (client) => {
     await client.query(
       `INSERT INTO game_sessions (id, host_id, room_code, room_title, status, capacity, total_players, started_at, ended_at, formatted_time, stats, created_at)
@@ -888,6 +797,20 @@ async function saveHostedGameSession(hostUsername, sessionRecord) {
        ON CONFLICT (id) DO UPDATE SET ended_at = EXCLUDED.ended_at, stats = EXCLUDED.stats`,
       [sessionId, host, sessionRecord.pin || '', sessionRecord.roomTitle || 'Phòng thi trực tuyến', sessionRecord.capacity || 40, candidates.length, sessionRecord.createdAt || (now - 60000), now, sessionRecord.formattedTime || new Date(now).toLocaleString('vi-VN'), JSON.stringify(stats), sessionRecord.createdAt || now]
     );
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      await client.query(
+        `INSERT INTO game_players (id, game_session_id, nickname, avatar, final_score, rank,
+          correct_count, wrong_count, joined_at, finished_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (id) DO UPDATE SET final_score = EXCLUDED.final_score,
+           rank = EXCLUDED.rank, correct_count = EXCLUDED.correct_count,
+           wrong_count = EXCLUDED.wrong_count, finished_at = EXCLUDED.finished_at`,
+        [`gp-${crypto.createHash('sha256').update(sessionId + ':' + (c.id || i)).digest('hex')}`, sessionId, c.nick || 'Player', c.av || '01',
+          c.score || 0, i + 1, c.correctCount || 0,
+          (c.totalQuestions || 0) - (c.correctCount || 0), sessionRecord.createdAt || now, now]
+      );
+    }
     return { id: sessionId, ...sessionRecord };
   });
 }
@@ -957,7 +880,7 @@ async function formatQuizWithQuestionsPG(quizRow, includeCorrect = true) {
       version: qRow.version,
       text: qRow.content,
       choices: choices,
-      explanation: qRow.explanation || '',
+      explanation: includeCorrect ? (qRow.explanation || '') : '',
       difficulty: qRow.difficulty || 'medium',
       image: qRow.image_url || '',
       points: qRow.points || 100,

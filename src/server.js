@@ -176,7 +176,7 @@ function getSessionUser(req) {
   if (!session) return null;
 
   const user = auth.findUserByUsernameSync(session.username);
-  const role = user?.role || (session.username.toLowerCase() === 'admin' ? 'admin' : 'teacher');
+  const role = user?.role || 'teacher';
 
   return {
     username: session.username,
@@ -187,11 +187,7 @@ function getSessionUser(req) {
 }
 
 function isAdmin(sessionUser) {
-  return !!sessionUser && (
-    sessionUser.role === 'admin'
-    /* TODO: remove username-based admin fallback after migration */
-    || sessionUser.username?.toLowerCase() === 'admin'
-  );
+  return !!sessionUser && sessionUser.role === 'admin';
 }
 
 function isRoomHost(sessionUser, room) {
@@ -237,6 +233,7 @@ const server = http.createServer(async (req, res) => {
   // CORS Handling: Whitelist nghiêm ngặt từ ENV - KHÔNG reflect mọi origin!
   const origin = req.headers.origin;
   if (origin) {
+    res.setHeader('Vary', 'Origin');
     const allowedOrigins = getAllowedOrigins();
     if (allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -567,7 +564,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // B. Nếu là logged-in user và không có token: CHỈ match qua account binding do server gán lúc join
-        if (!player && sessionUser) {
+        if (!playerToken && sessionUser) {
           player = (rawRoom.players || []).find(p =>
             (p.accountUserId && sessionUser.userId && p.accountUserId === sessionUser.userId) ||
             (p.accountUsername && sessionUser.username && p.accountUsername.toLowerCase() === sessionUser.username.toLowerCase())
@@ -583,6 +580,11 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
+        if (rawRoom.status !== 'finished') {
+          sendJSON(res, 409, { success: false, message: 'Room has not finished.' });
+          return;
+        }
+        await roomsManager.finishAndArchiveRoom(pin);
         const questions = rawRoom.questions || [];
         let serverScore = Number(player.score) || 0;
         let correctCount = 0;
@@ -612,7 +614,8 @@ const server = http.createServer(async (req, res) => {
         authoritativeRecord = {
           id: `attempt-${rawRoom.sessionId}-${player.id}`,
           gameSessionId: rawRoom.sessionId,
-          username,
+          username: player.accountUsername || 'guest',
+          accountUserId: player.accountUserId || null,
           quizId: rawRoom.examId || null,
           pin: rawRoom.pin,
           roomTitle: rawRoom.title,
@@ -936,7 +939,6 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Tăng số bản sao phát hành trực tiếp trong DB mà không saveQuiz() toàn bộ đề
-      await db.incrementQuizCopiesIssued(targetExam.id);
 
       // Tạo bản sao cho Private Storage của giáo viên
       const newPrivateExam = {
@@ -950,6 +952,7 @@ const server = http.createServer(async (req, res) => {
       };
 
       const saved = await db.saveQuiz(newPrivateExam, sessionUser.username, false);
+      await db.incrementQuizCopiesIssued(targetExam.id);
       sendJSON(res, 200, {
         success: true,
         exam: saved,
@@ -1339,7 +1342,12 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
       return;
     }
-    await roomsManager.finishAndArchiveRoom(pin);
+    try {
+      await roomsManager.finishAndArchiveRoom(pin);
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: 'Unable to archive room. Please retry.' });
+      return;
+    }
     roomsManager.deleteRoom(pin);
     sendJSON(res, 200, { success: true, deleted: true });
     return;

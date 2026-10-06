@@ -216,8 +216,10 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
     // Reconnect thành công: cập nhật thời gian, không overwrite ID bằng ID mới lạ
     existing.lastUpdated = now;
     if (av) existing.av = av;
-    if (accountUserId) existing.accountUserId = accountUserId;
-    if (accountUsername) existing.accountUsername = accountUsername;
+    // Reconnect must preserve the account bound at the original join.
+    if (existing.accountUserId && accountUserId && existing.accountUserId !== accountUserId) {
+      return { success: false, message: 'Player belongs to another account.' };
+    }
 
     return {
       success: true,
@@ -566,13 +568,14 @@ async function finishAndArchiveRoom(pin) {
   if (room.isArchived) {
     return { room, stats };
   }
-  room.isArchived = true;
+  if (room.archivePromise) return room.archivePromise;
 
   const now = Date.now();
   let sessionId = room.sessionId;
   if (!sessionId) {
     console.warn(`⚠️ [Room ${room.pin}] Legacy room missing sessionId, falling back to generated id.`);
-    sessionId = `hosted-${room.pin}-${now}`;
+    sessionId = crypto.randomUUID();
+    room.sessionId = sessionId;
   }
 
   const sessionRecord = {
@@ -587,14 +590,17 @@ async function finishAndArchiveRoom(pin) {
     stats: stats,
   };
 
-  try {
+  room.archivePromise = (async () => {
     await db.saveHostedGameSession(room.hostUsername, sessionRecord);
-    console.log(`💾 [Multiplayer] Đã lưu phòng thi ${room.pin} vào PostgreSQL game_sessions & game_players!`);
-  } catch (err) {
-    console.error('Lỗi lưu game session vào PostgreSQL:', err.message);
+    room.isArchived = true;
+    return { room, stats };
+  })();
+  try {
+    return await room.archivePromise;
+  } finally {
+    delete room.archivePromise;
   }
 
-  return { room, stats };
 }
 
 function deleteRoom(pin) {
