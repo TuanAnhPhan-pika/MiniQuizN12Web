@@ -39,8 +39,10 @@ async function createRoom({ hostUsername, exam, capacity = 40, isLocked = false,
   const roomTitle = title || exam.title || 'Phòng thi trực tuyến';
   const questions = (exam && Array.isArray(exam.questions)) ? exam.questions : [];
   const hostToken = crypto.randomBytes(32).toString('hex');
+  const sessionId = crypto.randomUUID();
 
   const room = {
+    sessionId,
     pin,
     examId: exam.id || null,
     title: roomTitle,
@@ -64,6 +66,7 @@ async function createRoom({ hostUsername, exam, capacity = 40, isLocked = false,
         score: 0,
         currentQ: 0,
         isHost: true,
+        accountUsername: hostUsername,
         joinedAt: now,
         lastUpdated: now,
       }
@@ -124,6 +127,7 @@ function getRoomForClient(pin, isHost = false) {
 
   if (isHost) {
     return {
+      sessionId: room.sessionId,
       pin: room.pin,
       examId: room.examId,
       title: room.title,
@@ -155,6 +159,7 @@ function getRoomForClient(pin, isHost = false) {
   }));
 
   return {
+    sessionId: room.sessionId,
     pin: room.pin,
     examId: room.examId,
     title: room.title,
@@ -182,7 +187,7 @@ function verifyPlayer(room, playerId, playerToken) {
   return player;
 }
 
-function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false }) {
+function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, accountUserId = null, accountUsername = null }) {
   const room = getRawRoom(pin);
   if (!room) return { success: false, message: 'Phòng thi không tồn tại' };
 
@@ -211,6 +216,8 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false }) {
     // Reconnect thành công: cập nhật thời gian, không overwrite ID bằng ID mới lạ
     existing.lastUpdated = now;
     if (av) existing.av = av;
+    if (accountUserId) existing.accountUserId = accountUserId;
+    if (accountUsername) existing.accountUsername = accountUsername;
 
     return {
       success: true,
@@ -236,6 +243,8 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false }) {
     streak: 0,
     maxStreak: 0,
     isHost: !!isHost,
+    accountUserId: accountUserId || null,
+    accountUsername: accountUsername || null,
     joinedAt: now,
     lastUpdated: now,
   };
@@ -561,7 +570,7 @@ async function finishAndArchiveRoom(pin) {
 
   const now = Date.now();
   const sessionRecord = {
-    id: `hosted-${room.pin}-${now}`,
+    id: room.sessionId || `hosted-${room.pin}-${now}`,
     pin: room.pin,
     quizId: room.examId,
     roomTitle: room.title,

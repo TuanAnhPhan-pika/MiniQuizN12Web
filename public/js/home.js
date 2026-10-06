@@ -344,9 +344,6 @@
           <a href="dashboard.html" class="btn-login" style="background:#0284c7; color:#fff; border:none; text-decoration:none; font-weight:800; display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:10px; box-shadow:0 3px 8px rgba(2,132,199,0.3);" title="Vào Bảng điều khiển">
             <span>📊 Bảng điều khiển</span>
           </a>
-          <button type="button" onclick="openLoginModal('register')" class="btn-login" style="background:#10b981; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Tạo tài khoản mới hoặc đổi tài khoản">
-            <span>➕ Đổi TK</span>
-          </button>
           <button type="button" onclick="logoutOnHome()" class="btn-login" style="background:#ef4444; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Đăng xuất khỏi ${escapeHtml(dName)}">
             <span>Đăng xuất</span>
           </button>

@@ -359,7 +359,7 @@ async function getPublicQuizzes() {
   );
   const out = [];
   for (const row of res.rows) {
-    const qz = await formatQuizWithQuestionsPG(row, true);
+    const qz = await formatQuizWithQuestionsPG(row, false);
     if (qz) out.push(qz);
   }
   return out;
@@ -386,7 +386,7 @@ async function getPrivateQuizzes(ownerUsername) {
   return out;
 }
 
-async function getQuizById(quizId, { includeCorrect = true, requestingUser = null } = {}) {
+async function getQuizById(quizId, { includeCorrect = false, requestingUser = null, internal = false } = {}) {
   const res = await pg.query(
     `SELECT * FROM quizzes 
      WHERE (id = $1 OR code = $1)
@@ -398,10 +398,13 @@ async function getQuizById(quizId, { includeCorrect = true, requestingUser = nul
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
 
-  // Phân quyền: nếu đề thi là riêng tư (is_public = false), chỉ owner thực hoặc admin mới được truy cập
-  if (!row.is_public && requestingUser) {
+  // Phân quyền: nếu đề thi là riêng tư (is_public = false), bắt buộc requestingUser hợp lệ (Default-Deny)
+  if (!row.is_public && !internal) {
+    if (!requestingUser) {
+      return null;
+    }
     const reqUname = String(typeof requestingUser === 'string' ? requestingUser : requestingUser.username || '').toLowerCase();
-    const reqUid = typeof requestingUser === 'object' ? requestingUser.id : null;
+    const reqUid = typeof requestingUser === 'object' ? (requestingUser.userId || requestingUser.id) : null;
     const isOwner = (reqUid && row.owner_user_id === reqUid) ||
                     (row.owner_id && row.owner_id.toLowerCase() === reqUname) ||
                     (row.shared_by && row.shared_by.toLowerCase() === reqUname) ||
@@ -572,22 +575,36 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
     return quizId;
   });
 
-  return await getQuizById(savedQuizId, { includeCorrect: true });
+  return await getQuizById(savedQuizId, { includeCorrect: true, internal: true });
 }
 
-async function deleteQuiz(quizId, ownerUsername) {
-  const lower = String(ownerUsername || '').toLowerCase();
-  const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [lower]);
-  const ownerUserId = uRes.rows[0]?.id || null;
+async function deleteQuiz(quizId, userOrUsername) {
+  let lower = '';
+  let ownerUserId = null;
+  let userIsAdmin = false;
+
+  if (userOrUsername && typeof userOrUsername === 'object') {
+    lower = String(userOrUsername.username || '').toLowerCase();
+    ownerUserId = userOrUsername.userId || userOrUsername.id || null;
+    userIsAdmin = userOrUsername.role === 'admin' || lower === 'admin';
+  } else {
+    lower = String(userOrUsername || '').toLowerCase();
+    userIsAdmin = lower === 'admin';
+  }
+
+  if (!ownerUserId && lower) {
+    const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [lower]);
+    ownerUserId = uRes.rows[0]?.id || null;
+  }
 
   // SOFT DELETE: Giữ nguyên lịch sử attempts, chỉ ẩn khỏi UI
   const res = await pg.query(
     `UPDATE quizzes 
      SET deleted_at = NOW(), status = 'archived' 
      WHERE id = $1 
-       AND (owner_user_id = $2 OR LOWER(owner_id) = $3 OR LOWER(shared_by) = $3 OR $3 = 'admin')
+       AND (owner_user_id = $2 OR LOWER(owner_id) = $3 OR LOWER(shared_by) = $3 OR $4 = true)
      RETURNING id`,
-    [quizId, ownerUserId, lower]
+    [quizId, ownerUserId, lower, userIsAdmin]
   );
   return res.rowCount > 0;
 }

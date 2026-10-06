@@ -173,7 +173,28 @@ function getSessionUser(req) {
   }
   if (!token) return null;
   const session = auth.getSession(token);
-  return session ? { username: session.username, token } : null;
+  if (!session) return null;
+
+  const user = auth.findUserByUsernameSync(session.username);
+  const role = user?.role || (session.username.toLowerCase() === 'admin' ? 'admin' : 'teacher');
+
+  return {
+    username: session.username,
+    token,
+    userId: user?.id || null,
+    role
+  };
+}
+
+function isAdmin(sessionUser) {
+  return !!sessionUser && (sessionUser.role === 'admin' || sessionUser.username?.toLowerCase() === 'admin');
+}
+
+function isRoomHost(sessionUser, room) {
+  return !!sessionUser && !!room && (
+    (sessionUser.username && room.hostUsername && sessionUser.username.toLowerCase() === room.hostUsername.toLowerCase()) ||
+    isAdmin(sessionUser)
+  );
 }
 
 function sendJSON(res, status, obj, extraHeaders) {
@@ -194,11 +215,12 @@ const server = http.createServer(async (req, res) => {
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
   } else {
     res.setHeader('Access-Control-Allow-Origin', '*');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Player-Token');
 
   if (method === 'OPTIONS') {
     res.writeHead(204);
@@ -497,7 +519,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJsonBody(req);
       const sessionUser = getSessionUser(req);
-      const username = sessionUser ? sessionUser.username : (body.username || 'guest');
+      // BẢO MẬT: Guest không được phép khai username của account khác!
+      const username = sessionUser ? sessionUser.username : 'guest';
       const pin = body.pin || '';
 
       let authoritativeRecord = null;
@@ -672,7 +695,7 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 404, { success: false, message: 'Phòng thi không tồn tại hoặc đã kết thúc.' });
         return;
       }
-      const isHost = (sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase()) || sessionUser.role === 'admin' || sessionUser.username.toLowerCase() === 'admin';
+      const isHost = isRoomHost(sessionUser, rawRoom);
       if (!isHost) {
         sendJSON(res, 403, { success: false, message: 'Bạn không phải là host của phòng thi này.' });
         return;
@@ -836,7 +859,7 @@ const server = http.createServer(async (req, res) => {
     }
     const examId = pathname.replace('/api/storage/public/', '');
     try {
-      const deleted = await db.deleteQuiz(examId, sessionUser.username);
+      const deleted = await db.deleteQuiz(examId, sessionUser);
       if (!deleted) {
         sendJSON(res, 403, { success: false, message: 'Bạn không có quyền xóa đề thi này hoặc đề thi không tồn tại.' });
         return;
@@ -907,10 +930,7 @@ const server = http.createServer(async (req, res) => {
     if (!sessionUser) {
       return { ok: false, status: 401, message: 'Yêu cầu đăng nhập tài khoản Host.' };
     }
-    const isHost = (sessionUser.username && rawRoom.hostUsername && sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase()) ||
-                   sessionUser.role === 'admin' ||
-                   sessionUser.username.toLowerCase() === 'admin';
-    if (!isHost) {
+    if (!isRoomHost(sessionUser, rawRoom)) {
       return { ok: false, status: 403, message: 'Bạn không có quyền điều khiển phòng này.' };
     }
     return { ok: true, room: rawRoom, sessionUser };
@@ -967,11 +987,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const isHost = sessionUser && (
-      (sessionUser.username && rawRoom.hostUsername && sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase()) ||
-      sessionUser.role === 'admin' ||
-      sessionUser.username.toLowerCase() === 'admin'
-    );
+    const isHost = isRoomHost(sessionUser, rawRoom);
 
     // Kiểm tra nhanh điều kiện vào phòng
     if (parsedUrl.searchParams.get('check') === '1') {
@@ -1025,6 +1041,13 @@ const server = http.createServer(async (req, res) => {
 
     // [GET] /api/rooms/:pin/question-stats - Chỉ trả số lượng lựa chọn, KHÔNG trả đáp án đúng
     if (subAction === 'question-stats') {
+      // Anti-cheat: khi đang trong phase question và room đang chạy, chỉ host được xem choicesCount realtime
+      const isQuestionPhase = rawRoom.phase === 'question' && (rawRoom.status === 'started' || rawRoom.status === 'in_progress');
+      if (isQuestionPhase && !isHost) {
+        sendJSON(res, 403, { success: false, message: 'Chỉ host mới có quyền xem thống kê lựa chọn khi câu hỏi đang diễn ra.' });
+        return;
+      }
+
       const q = Number(parsedUrl.searchParams.get('q')) || 0;
       const question = (rawRoom.questions && rawRoom.questions[q]) || null;
       const choicesLen = (question && Array.isArray(question.choices)) ? question.choices.length : 4;
@@ -1106,10 +1129,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readJsonBody(req);
     const sessionUser = getSessionUser(req);
     const rawRoom = roomsManager.getRawRoom(pin);
-    const isHost = sessionUser && rawRoom && (
-      (sessionUser.username && rawRoom.hostUsername && sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase()) ||
-      sessionUser.role === 'admin'
-    );
+    const isHost = isRoomHost(sessionUser, rawRoom);
     const result = roomsManager.removePlayer(pin, {
       id: body.id || body.playerId,
       playerToken: body.playerToken || req.headers['x-player-token'],
@@ -1148,10 +1168,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readJsonBody(req);
     const sessionUser = getSessionUser(req);
     const rawRoom = roomsManager.getRawRoom(pin);
-    const isHost = sessionUser && rawRoom && (
-      (sessionUser.username && rawRoom.hostUsername && sessionUser.username.toLowerCase() === rawRoom.hostUsername.toLowerCase()) ||
-      sessionUser.role === 'admin'
-    );
+    const isHost = isRoomHost(sessionUser, rawRoom);
 
     const result = roomsManager.addPlayer(pin, {
       id: body.id,
