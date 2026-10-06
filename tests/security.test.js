@@ -211,7 +211,7 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
   const route = `/api/rooms/${room.pin}`;
   const post = (url, body, headers = {}) => fetch(base + url, { method: 'POST', headers: {
     'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-  const forbidden = new Set(['correct', 'correctChoice', 'correctIndex', 'correctText', 'is_correct', 'isCorrect', 'explanation', 'playerToken', 'hostToken']);
+  const forbidden = new Set(['correct', 'correctChoice', 'correctIndex', 'correctText', 'is_correct', 'isCorrect', 'scoreEarned', 'newTotalScore', 'explanation', 'playerToken', 'hostToken']);
   function noLeaks(value) {
     if (!value || typeof value !== 'object') return;
     for (const [key, nested] of Object.entries(value)) {
@@ -234,6 +234,7 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
   }
   assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question', isHost: true })).status, 401);
   const hostHeaders = { Authorization: 'Bearer host' };
+  for (const player of rooms.getRawRoom(room.pin).players.filter(p => !p.isHost)) { player.score = 100; player.streak = 2; }
   assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question' }, hostHeaders)).status, 200);
   const invalidToken = rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: 'wrong', qIdx: 0, choice: 1 });
   assert.equal(invalidToken.unauthorized, true);
@@ -250,10 +251,33 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
     noLeaks(accepted);
     const record = rooms.getRawRoom(room.pin).answers[0][player.id];
     assert.equal(record.isCorrect, i === 0);
-    assert.equal(accepted.scoreEarned, record.scoreAwarded);
+    assert.deepEqual(Object.keys(accepted).sort(), ['success', 'qIdx', 'choice', 'answerAccepted'].sort());
+    assert.ok(!Object.hasOwn(accepted, 'streak'));
+    assert.equal(record.totalScoreAfter, 100 + record.scoreAwarded);
+    assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === player.id).score, 100);
+    assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === player.id).streak, 2);
     assert.ok(record.responseTimeMs >= 0);
     assert.equal((await (await post(route + '/answer', body)).json()).duplicate, true);
   }
+  const hiddenBoard = await (await fetch(base + route + '/leaderboard')).json();
+  assert.deepEqual(hiddenBoard.leaderboard.map(p => [p.id, p.score, p.streak]), [['a', 100, 2], ['b', 100, 2]]);
+  // Repeating the host's open-question request must not refresh from live scores.
+  await post(route + '/advance', { nextQ: 0, phase: 'question' }, hostHeaders);
+  assert.equal(rooms.getLeaderboard(room.pin)[0].score, 100);
+  for (const suffix of ['', '/status', '/score']) {
+    const payload = await (await fetch(base + route + suffix)).json();
+    const players = payload.room ? payload.room.players : payload.players;
+    for (const player of players.filter(p => !p.isHost)) {
+      assert.equal(player.score, 100);
+      assert.equal(player.streak, 2);
+    }
+  }
+  const metadata = await (await post(route + '/score', { playerId: 'a', playerToken: players[0].playerToken, score: 99999, streak: 99 })).json();
+  assert.equal(Object.hasOwn(metadata.player, 'score'), false);
+  assert.equal(Object.hasOwn(metadata.player, 'streak'), false);
+  assert.ok(metadata.leaderboard.every(p => p.score === 100 && p.streak === 2));
+  const rejoin = await (await post(route + '/join', { id: 'a', nick: 'a', playerToken: players[0].playerToken })).json();
+  assert.equal(rejoin.room.players.find(p => p.id === 'a').score, 100);
   for (const suffix of ['', '/status', '/state', '/question-stats?q=0', '/leaderboard', '?role=host', '/result?q=0&role=host']) {
     noLeaks(await (await fetch(base + route + suffix)).json());
   }
@@ -267,6 +291,21 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
   }
   await post(route + '/advance', { nextQ: 0, phase: 'result' }, hostHeaders);
   const result = await (await fetch(base + route + '/result?q=0')).json();
+  assert.equal(Object.hasOwn(result, 'playerResult'), false);
+  const ownResult = async (id, token, q = 0) => fetch(base + route + `/result?q=${q}&playerId=${id}`, { headers: { 'X-Player-Token': token } });
+  const unanswered = rooms.addPlayer(room.pin, { id: 'unanswered', nick: 'unanswered' }).player;
+  assert.deepEqual((await (await ownResult('unanswered', unanswered.playerToken)).json()).playerResult, { choice: -1, isCorrect: false, scoreEarned: 0, totalScore: 0, streak: 0 });
+  const aResult = await (await ownResult('a', players[0].playerToken)).json();
+  const storedA = rooms.getRawRoom(room.pin).answers[0].a;
+  assert.deepEqual(aResult.playerResult, { choice: 1, isCorrect: true, scoreEarned: storedA.scoreAwarded, totalScore: storedA.totalScoreAfter, streak: 3 });
+  const bResult = await (await ownResult('b', players[1].playerToken)).json();
+  assert.deepEqual(bResult.playerResult, { choice: 0, isCorrect: false, scoreEarned: 0, totalScore: 100, streak: 0 });
+  assert.equal((await ownResult('a', players[1].playerToken)).status, 403);
+  assert.equal((await ownResult('a', 'wrong')).status, 403);
+  assert.equal((await fetch(base + route + '/result?q=0&playerId=a')).status, 403);
+  const revealedBoard = rooms.getLeaderboard(room.pin);
+  assert.equal(revealedBoard.find(p => p.id === 'a').score, storedA.totalScoreAfter);
+  assert.equal(revealedBoard.find(p => p.id === 'a').streak, 3);
   assert.equal(result.correctChoice, 1);
   assert.equal(result.explanation, 'Because B');
   assert.deepEqual(result.distribution, [1, 1]);
@@ -274,12 +313,53 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
   assert.equal(rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: players[0].playerToken, qIdx: 0, choice: 1 }).rejected, true);
   await post(route + '/advance', { nextQ: 1, phase: 'question' }, hostHeaders);
   assert.equal(rooms.getRawRoom(room.pin).phase, 'question');
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').score, storedA.totalScoreAfter);
+  rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: players[0].playerToken, qIdx: 1, choice: 0 });
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').score, storedA.totalScoreAfter);
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').streak, 3);
   noLeaks(await (await fetch(base + route)).json());
   assert.equal((await fetch(base + route + '/result?q=1')).status, 403);
   assert.equal((await fetch(base + route + '/result?q=0')).status, 403);
   await post('/api/history/hosted', { pin: room.pin }, hostHeaders);
   for (const q of [0, 1]) assert.equal((await fetch(base + route + '/result?q=' + q)).status, 200);
+  assert.deepEqual((await (await ownResult('a', players[0].playerToken, 0)).json()).playerResult, aResult.playerResult);
+  assert.equal((await ownResult('a', 'wrong', 1)).status, 403);
   const finished = await (await fetch(base + route)).json();
   assert.equal(finished.room.questions[1].correct, 0);
   assert.equal(JSON.stringify(finished).includes('playerToken'), false);
+});
+
+
+test('question snapshots preserve ranking, repeated opens, late joins and streak resets', async () => {
+  const rooms = load('src/rooms/manager.js', { '../db/index.js': { async saveHostedGameSession() {} } });
+  const room = await rooms.createRoom({ hostUsername: 'teacher', exam: { questions: [
+    { choices: ['A', 'B'], correct: 1 }, { choices: ['C', 'D'], correct: 0 },
+  ] } });
+  const a = rooms.addPlayer(room.pin, { id: 'a', nick: 'a' }).player;
+  rooms.addPlayer(room.pin, { id: 'b', nick: 'b' });
+  for (const player of room.players.filter(p => !p.isHost)) { player.score = 100; player.streak = 2; player.lastUpdated = player.id === 'a' ? 1 : 2; }
+  rooms.startRoom(room.pin, 1);
+  // The /status handler changes countdown to started without calling advance.
+  room.status = 'started';
+  rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: a.playerToken, qIdx: 0, choice: 1 });
+  assert.equal(rooms.getLeaderboard(room.pin).map(p => p.id).join(','), 'a,b');
+  assert.ok(rooms.getLeaderboard(room.pin).every(p => p.score === 100 && p.streak === 2));
+  const score = room.players.find(p => p.id === 'a').score;
+  assert.ok(score > 100);
+  assert.equal(rooms.getLeaderboard(room.pin, true)[0].score, score);
+  rooms.advanceQuestion(room.pin, 0, 'question');
+  assert.equal(rooms.getLeaderboard(room.pin)[0].score, 100);
+  const late = rooms.addPlayer(room.pin, { id: 'late', nick: 'late' }).player;
+  rooms.submitAnswer(room.pin, { playerId: 'late', playerToken: late.playerToken, qIdx: 0, choice: 1 });
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'late').score, 0);
+  rooms.advanceQuestion(room.pin, 0, 'result');
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').score, score);
+  rooms.advanceQuestion(room.pin, 1, 'question');
+  rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: a.playerToken, qIdx: 1, choice: 1 });
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').streak, 3);
+  assert.equal(room.players.find(p => p.id === 'a').streak, 0);
+  rooms.advanceQuestion(room.pin, 1, 'question');
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').streak, 3);
+  await rooms.finishAndArchiveRoom(room.pin);
+  assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').streak, 0);
 });

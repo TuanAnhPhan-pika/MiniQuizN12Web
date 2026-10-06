@@ -142,6 +142,8 @@ async function syncRoomFromServer() {
         if (data.room.title || data.room.name) {
           EXAM_TITLE = data.room.name || data.room.title;
         }
+        const me = (data.room.players || []).find(player => player.id === myPlayerId);
+        if (me) totalScore = Number(me.score) || 0;
         currentQ = Number(data.room.currentQ) || 0;
         isFinished = data.room.status === 'finished';
         if (data.room.timePerQ) {
@@ -301,7 +303,6 @@ function loadQuestion(idx) {
   ticksElapsed   = 0;
   earnedThisQ    = 0;
   selectedChoice = -1;
-  serverAnswerResult = null;
   closedQuestionResult = null;
 
   const q = QUESTIONS[idx];
@@ -322,6 +323,7 @@ function loadQuestion(idx) {
   document.getElementById('result-panel').classList.remove('show');
   document.getElementById('final-panel').classList.remove('show');
 
+  document.getElementById('total-score').textContent = Math.round(totalScore);
   startTimer();
 
   // Bắt đầu theo dõi trạng thái đồng bộ với chủ phòng
@@ -419,7 +421,6 @@ function updateTimerUI(secsLeft) {
 /* ════════════════════════════════════════════
    ANSWER SELECTION
    ════════════════════════════════════════════ */
-let serverAnswerResult = null;
 let closedQuestionResult = null;
 let resultFetchPending = false;
 
@@ -427,7 +428,6 @@ function selectAnswer(choiceIdx) {
   if (answered) return;
   answered = true;
   selectedChoice = choiceIdx;
-  serverAnswerResult = null;
 
   earnedThisQ = 0;
   const submittedQ = currentQ;
@@ -459,11 +459,7 @@ function selectAnswer(choiceIdx) {
     .then(r => r.json())
     .then(res => {
       if (res && res.success && currentQ === submittedQ) {
-        serverAnswerResult = res;
         document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
-        if (typeof res.scoreEarned === 'number') {
-          earnedThisQ = res.scoreEarned;
-        }
       }
     })
     .catch(() => {});
@@ -484,11 +480,18 @@ async function revealAndShow() {
     const requestedQ = currentQ;
     resultFetchPending = true;
     try {
-      const response = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/result?q=${requestedQ}`);
+      const response = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/result?q=${requestedQ}&playerId=${encodeURIComponent(myPlayerId)}`, {
+        headers: { 'X-Player-Token': myPlayerToken }
+      });
       if (!response.ok) return;
       const result = await response.json();
       if (!result.success || requestedQ !== currentQ) return;
+      if (!result.playerResult) return;
       closedQuestionResult = result;
+      selectedChoice = result.playerResult.choice;
+      answered = selectedChoice >= 0;
+      earnedThisQ = result.playerResult.scoreEarned;
+      totalScore = result.playerResult.totalScore;
     } catch (e) { return; }
     finally { resultFetchPending = false; }
   }
@@ -522,7 +525,7 @@ async function revealAndShow() {
   } else {
     /* Đã bấm — giờ mới hiển thị đúng / sai */
     if (btns[selectedChoice]) btns[selectedChoice].classList.remove('selected');
-    const isCorr = selectedChoice === correctIndex;
+    const isCorr = closedQuestionResult ? closedQuestionResult.playerResult.isCorrect : selectedChoice === correctIndex;
 
     if (isCorr) {
       if (btns[selectedChoice]) btns[selectedChoice].classList.add('correct');
@@ -531,9 +534,6 @@ async function revealAndShow() {
       if (correctIndex >= 0 && btns[correctIndex]) btns[correctIndex].classList.add('reveal-correct');
     }
 
-    if (serverAnswerResult && typeof serverAnswerResult.scoreEarned === 'number') {
-      earnedThisQ = serverAnswerResult.scoreEarned;
-    }
 
     userAnswers.push({
       questionIndex: currentQ,
@@ -555,7 +555,7 @@ async function revealAndShow() {
    RESULT PANEL & BẢNG XẾP HẠNG THỰC TẾ ĐỒNG BỘ
    ════════════════════════════════════════════ */
 async function showResult(earned) {
-  totalScore += earned;
+  if (!closedQuestionResult) totalScore += earned;
 
   // Gửi điểm số mới nhất và nhận BXH thời gian thực của tất cả thí sinh
   let sorted = await postAndFetchLeaderboard(currentQ, totalScore);
@@ -570,7 +570,7 @@ async function showResult(earned) {
   const isLast   = currentQ === QUESTIONS.length - 1;
 
   /* Result info */
-  const wasCorrect = selectedChoice >= 0 && (closedQuestionResult ? selectedChoice === closedQuestionResult.correctChoice : earned > 0);
+  const wasCorrect = selectedChoice >= 0 && (closedQuestionResult ? closedQuestionResult.playerResult.isCorrect : earned > 0);
   document.getElementById('result-title').textContent =
     wasCorrect ? '✅ Đúng rồi!' : (earnedThisQ === 0 && answered ? '❌ Sai mất rồi!' : '⏰ Hết giờ!');
   if (closedQuestionResult && closedQuestionResult.explanation) {
@@ -580,6 +580,9 @@ async function showResult(earned) {
     '+' + Math.round(earned);
   document.getElementById('result-total').textContent =
     'Tổng điểm của bạn: ' + Math.round(totalScore);
+  if (closedQuestionResult) {
+    document.getElementById('result-total').textContent += ' · Chuỗi đúng: ' + closedQuestionResult.playerResult.streak;
+  }
   document.getElementById('total-score').textContent = Math.round(totalScore);
 
   /* Render live podium & rows */

@@ -71,6 +71,7 @@ async function createRoom({ hostUsername, exam, capacity = 40, isLocked = false,
         lastUpdated: now,
       }
     ],
+    scoreSnapshots: new Map(), // question index -> player score/streak/rank snapshot
     answers: {}, // qIdx -> { [playerId]: record }
   };
 
@@ -87,18 +88,35 @@ function getRawRoom(pin) {
  * Helper sanitize thông tin người chơi:
  * TUYỆT ĐỐI KHÔNG để lộ playerToken, hostToken ra ngoài!
  */
-function sanitizePlayer(player) {
+function captureScoreSnapshot(room, qIdx) {
+  room.scoreSnapshots = room.scoreSnapshots || new Map();
+  if (room.scoreSnapshots.has(qIdx)) return;
+  room.scoreSnapshots.set(qIdx, new Map((room.players || []).map(player => [player.id, {
+    score: Number(player.score) || 0,
+    streak: Number(player.streak) || 0,
+    lastUpdated: player.lastUpdated || 0,
+  }])));
+}
+
+function visiblePlayerScore(room, player, isHost = false) {
+  if (!isHost && room && room.status !== 'finished' && room.phase === 'question') {
+    return room.scoreSnapshots?.get(room.currentQ)?.get(player.id) || { score: 0, streak: 0, lastUpdated: player.joinedAt || 0 };
+  }
+  return { score: Number(player.score) || 0, streak: Number(player.streak) || 0, lastUpdated: player.lastUpdated || 0 };
+}
+
+function sanitizePlayer(player, room, isHost = false) {
   if (!player) return null;
   return {
     id: player.id,
     nick: player.nick,
     av: player.av || '01',
-    score: Number(player.score) || 0,
+    score: visiblePlayerScore(room, player, isHost).score,
     currentQ: Number(player.currentQ) || 0,
-    streak: Number(player.streak) || 0,
+    streak: visiblePlayerScore(room, player, isHost).streak,
     isHost: !!player.isHost,
     joinedAt: player.joinedAt,
-    lastUpdated: player.lastUpdated,
+    lastUpdated: visiblePlayerScore(room, player, isHost).lastUpdated,
   };
 }
 
@@ -123,7 +141,7 @@ function getRoomForClient(pin, isHost = false) {
   if (!room) return null;
 
   // Sanitize danh sách players: bảo mật tuyệt đối playerToken
-  const sanitizedPlayers = (room.players || []).map(p => sanitizePlayer(p)).filter(Boolean);
+  const sanitizedPlayers = (room.players || []).map(p => sanitizePlayer(p, room, isHost)).filter(Boolean);
 
   if (isHost) {
     return {
@@ -251,6 +269,8 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
     lastUpdated: now,
   };
   room.players.push(newPlayer);
+  const snapshot = room.scoreSnapshots?.get(room.currentQ);
+  if (snapshot && !snapshot.has(newPlayer.id)) snapshot.set(newPlayer.id, { score: 0, streak: 0, lastUpdated: now });
 
   return {
     success: true,
@@ -299,6 +319,7 @@ function startRoom(pin, countdownSec = 5) {
     return { success: false, message: 'Phòng thi không ở trạng thái có thể bắt đầu' };
   }
   const sec = Math.max(1, Math.min(60, Number(countdownSec) || 5));
+  captureScoreSnapshot(room, 0);
   room.status = 'countdown';
   room.countdownEnd = Date.now() + (sec * 1000);
   room.currentQ = 0;
@@ -317,6 +338,7 @@ function advanceQuestion(pin, nextQIndex, phase = 'question') {
   if (!Number.isInteger(qNum) || qNum < 0 || (totalQuestions > 0 && qNum >= totalQuestions)) {
     return { success: false, message: 'Chỉ số câu hỏi không hợp lệ' };
   }
+  if (targetPhase === 'question') captureScoreSnapshot(room, qNum);
   room.currentQ = qNum;
   room.phase = targetPhase;
   room.phaseStartedAt = Date.now();
@@ -375,6 +397,8 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     return { success: false, duplicate: true, message: 'Bạn đã nộp đáp án cho câu này rồi!' };
   }
 
+  captureScoreSnapshot(room, room.currentQ);
+
   // 5. Server tự tính responseTimeMs chuẩn xác
   const now = Date.now();
   const rawElapsed = now - (room.phaseStartedAt || now);
@@ -418,6 +442,7 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     choice: choiceNum,
     isCorrect,
     scoreAwarded,
+    totalScoreAfter: Number(player.score) || 0,
     responseTimeMs: serverResponseTimeMs,
     streakBefore,
     streakAfter,
@@ -431,9 +456,6 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     qIdx,
     choice: choiceNum,
     answerAccepted: true,
-    scoreEarned: scoreAwarded,
-    newTotalScore: player.score,
-    streak: streakAfter,
   };
 }
 
@@ -459,13 +481,13 @@ function updatePlayerMetadata(pin, { playerId, playerToken, av }) {
       id: player.id,
       nick: player.nick,
       av: player.av,
-      score: player.score,
+      ...(room.phase !== 'question' || room.status === 'finished' ? { score: player.score } : {}),
     },
     leaderboard: getLeaderboard(pin)
   };
 }
 
-function getLeaderboard(pin) {
+function getLeaderboard(pin, isHost = false) {
   const room = getRawRoom(pin);
   if (!room) return [];
 
@@ -475,10 +497,10 @@ function getLeaderboard(pin) {
       id: p.id,
       nick: p.nick,
       av: p.av || '01',
-      score: Number(p.score) || 0,
+      score: visiblePlayerScore(room, p, isHost).score,
       currentQ: Number(p.currentQ) || 0,
-      streak: p.streak || 0,
-      lastUpdated: p.lastUpdated || 0,
+      streak: visiblePlayerScore(room, p, isHost).streak,
+      lastUpdated: visiblePlayerScore(room, p, isHost).lastUpdated,
     }))
     .sort((a, b) => (b.score - a.score) || (a.lastUpdated - b.lastUpdated));
 }

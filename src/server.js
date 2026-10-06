@@ -1066,6 +1066,25 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 403, { success: false, message: 'Question results are not available yet.' });
         return;
       }
+      const playerId = parsedUrl.searchParams.get('playerId');
+      const playerToken = req.headers['x-player-token'];
+      let playerResult;
+      if (playerId !== null || playerToken !== undefined) {
+        const player = roomsManager.verifyPlayer(rawRoom, playerId, playerToken);
+        if (!player || player.isHost) {
+          sendJSON(res, 403, { success: false, message: 'Invalid player credentials.' });
+          return;
+        }
+        const answer = rawRoom.answers[qIdx]?.[player.id];
+        const before = rawRoom.scoreSnapshots?.get(qIdx)?.get(player.id);
+        playerResult = {
+          choice: answer ? answer.choice : -1,
+          isCorrect: answer ? answer.isCorrect : false,
+          scoreEarned: answer ? answer.scoreAwarded : 0,
+          totalScore: answer ? answer.totalScoreAfter : (before?.score || 0),
+          streak: answer ? answer.streakAfter : (before?.streak || 0),
+        };
+      }
       const question = rawRoom.questions[qIdx];
       const distribution = new Array(question.choices.length).fill(0);
       for (const answer of Object.values(rawRoom.answers[qIdx] || {})) {
@@ -1075,6 +1094,7 @@ const server = http.createServer(async (req, res) => {
         success: true, qIdx, correctChoice: question.correct,
         correctText: question.choices[question.correct] || '',
         explanation: question.explanation || '', distribution,
+        ...(playerResult ? { playerResult } : {}),
       });
       return;
     }
@@ -1101,14 +1121,14 @@ const server = http.createServer(async (req, res) => {
         pin: rawRoom.pin,
         isLocked: !!rawRoom.isLocked,
         capacity: rawRoom.capacity,
-        players: (rawRoom.players || []).map(p => roomsManager.sanitizePlayer(p)).filter(Boolean)
+        players: (rawRoom.players || []).map(p => roomsManager.sanitizePlayer(p, rawRoom, isHost)).filter(Boolean)
       });
       return;
     }
 
     // [GET] /api/rooms/:pin/leaderboard
     if (subAction === 'leaderboard') {
-      const leaderboard = roomsManager.getLeaderboard(pin);
+      const leaderboard = roomsManager.getLeaderboard(pin, isHost);
       sendJSON(res, 200, { success: true, leaderboard });
       return;
     }
@@ -1262,7 +1282,7 @@ const server = http.createServer(async (req, res) => {
     sendJSON(res, 200, {
       success: true,
       player: result.player,
-      players: (rawRoom && rawRoom.players ? rawRoom.players.map(p => roomsManager.sanitizePlayer(p)).filter(Boolean) : []),
+      players: (rawRoom && rawRoom.players ? rawRoom.players.map(p => roomsManager.sanitizePlayer(p, rawRoom, isHost)).filter(Boolean) : []),
       room: result.room || roomsManager.getRoomForClient(pin, isHost),
       title: (result.room && result.room.title) || (rawRoom && rawRoom.title) || '',
       status: (result.room && result.room.status) || (rawRoom && rawRoom.status) || 'waiting'
