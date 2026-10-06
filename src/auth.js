@@ -22,13 +22,54 @@ const memorySessions = new Map(); // token -> session
 const loginAttempts = new Map(); // ip -> attempt object
 const registerAttempts = new Map(); // ip -> [timestamp]
 
-// ── Khởi tạo nạp dữ liệu từ PostgreSQL ──
+// ── Khởi tạo nạp dữ liệu từ Database (Supabase / PostgreSQL) ──
 let isInitialized = false;
 async function initAuth() {
   if (isInitialized) return;
   try {
+    if (db.useSupabase && db.useSupabase()) {
+      const { data: usersList } = await db.supabase.from('users').select('*');
+      const { data: profsList } = await db.supabase.from('profiles').select('*');
+      const profMap = new Map((profsList || []).map(p => [p.username, p]));
+
+      (usersList || []).forEach(r => {
+        const prof = profMap.get(r.username) || {};
+        memoryUsers.set(r.username_lower, {
+          id: r.id,
+          username: r.username,
+          usernameLower: r.username_lower,
+          displayName: r.display_name,
+          passwordHash: r.password_hash,
+          salt: r.salt,
+          createdAt: Number(r.created_at),
+          lastNameChangeAt: Number(r.last_name_change_at || 0),
+          lastPasswordChangeAt: Number(r.last_password_change_at || 0),
+          avatar: prof.avatar || '01',
+          bio: prof.bio || '',
+          role: prof.role || 'teacher',
+        });
+      });
+
+      const { data: sessList } = await db.supabase
+        .from('user_sessions')
+        .select('*')
+        .gt('expires_at', Date.now());
+
+      (sessList || []).forEach(r => {
+        memorySessions.set(r.token, {
+          username: r.username,
+          createdAt: Number(r.created_at),
+          expiresAt: Number(r.expires_at),
+        });
+      });
+
+      isInitialized = true;
+      console.log(`🔐 [Auth] Đã nạp ${memoryUsers.size} người dùng và ${memorySessions.size} phiên làm việc từ Supabase!`);
+      return;
+    }
+
     const { query } = require('./db/pool.js');
-    // Nạp users
+    // Nạp users từ PostgreSQL
     const uRes = await query(
       `SELECT u.id, u.username, u.username_lower, u.display_name, u.password_hash, u.salt,
               u.created_at, u.last_name_change_at, u.last_password_change_at,
@@ -53,7 +94,6 @@ async function initAuth() {
       });
     });
 
-    // Nạp active sessions còn hạn
     const sRes = await query(
       `SELECT token, username, created_at, expires_at FROM user_sessions WHERE expires_at > $1`,
       [Date.now()]
@@ -69,7 +109,7 @@ async function initAuth() {
     isInitialized = true;
     console.log(`🔐 [Auth] Đã nạp ${memoryUsers.size} người dùng và ${memorySessions.size} phiên làm việc từ PostgreSQL!`);
   } catch (err) {
-    console.error('Lỗi nạp Auth từ PostgreSQL:', err.message);
+    console.error('Lỗi nạp Auth từ Database:', err.message);
   }
 }
 
@@ -92,7 +132,24 @@ function getUsers() {
   return Array.from(memoryUsers.values());
 }
 
-function findUserByUsername(username) {
+async function findUserByUsername(username) {
+  const lower = String(username || '').toLowerCase();
+  if (memoryUsers.has(lower)) {
+    return memoryUsers.get(lower);
+  }
+  try {
+    const fromDb = await db.findUserByUsername(username);
+    if (fromDb) {
+      memoryUsers.set(lower, fromDb);
+      return fromDb;
+    }
+  } catch (err) {
+    console.error('Lỗi truy vấn user từ DB:', err.message);
+  }
+  return null;
+}
+
+function findUserByUsernameSync(username) {
   const lower = String(username || '').toLowerCase();
   return memoryUsers.get(lower) || null;
 }
@@ -211,13 +268,17 @@ function parseCookies(header) {
 const SESSION_COOKIE = 'mqc_session';
 
 function sessionCookieHeader(token, isSecure) {
-  const secureFlag = isSecure ? '; Secure' : '';
-  return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
+  if (isSecure) {
+    return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=${SESSION_TTL_MS / 1000}`;
+  }
+  return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 
 function clearSessionCookieHeader(isSecure) {
-  const secureFlag = isSecure ? '; Secure' : '';
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
+  if (isSecure) {
+    return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=0`;
+  }
+  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
 }
 
 // ── Rate-limiting chống spam đăng nhập (theo IP) ──
@@ -308,6 +369,7 @@ module.exports = {
   hashPassword,
   verifyPassword,
   findUserByUsername,
+  findUserByUsernameSync,
   createUser,
   updateUser,
   getUsers,

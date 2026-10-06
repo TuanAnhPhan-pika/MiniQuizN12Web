@@ -1,3 +1,4 @@
+try { require('dotenv').config(); } catch (e) {}
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
@@ -156,10 +157,21 @@ function getRequestHost(req) {
   return req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
 }
 
-// Lấy user đang đăng nhập từ cookie session; null nếu không hợp lệ
+// Lấy user đang đăng nhập từ token header hoặc cookie session; null nếu không hợp lệ
 function getSessionUser(req) {
-  const cookies = auth.parseCookies(req.headers.cookie);
-  const token = cookies[auth.SESSION_COOKIE];
+  let token = null;
+  const authHeader = req.headers['authorization'];
+  if (authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
+    token = authHeader.slice(7).trim();
+  }
+  if (!token && req.headers['x-session-token']) {
+    token = String(req.headers['x-session-token']).trim();
+  }
+  if (!token) {
+    const cookies = auth.parseCookies(req.headers.cookie);
+    token = cookies[auth.SESSION_COOKIE];
+  }
+  if (!token) return null;
   const session = auth.getSession(token);
   return session ? { username: session.username, token } : null;
 }
@@ -210,7 +222,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { exists: false, valid: false, message: err });
       return;
     }
-    let exists = !!auth.findUserByUsername(u);
+    let exists = !!(await auth.findUserByUsername(u));
     sendJSON(res, 200, {
       exists,
       valid: !exists,
@@ -243,16 +255,35 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 400, { success: false, message: 'Xác nhận mật khẩu không khớp.' });
         return;
       }
-      const existing = auth.findUserByUsername(username);
+      const existing = await auth.findUserByUsername(username);
       if (existing) {
-        sendJSON(res, 409, { success: false, message: 'Tài khoản đã tồn tại.' });
+        sendJSON(res, 409, { success: false, message: 'Tài khoản đã tồn tại. Vui lòng chuyển sang tab Đăng nhập.' });
         return;
       }
 
-      await auth.createUser({ username, displayName, password });
+      try {
+        await auth.createUser({ username, displayName, password });
+      } catch (createErr) {
+        if (createErr.message && (createErr.message.includes('unique constraint') || createErr.message.includes('duplicate key'))) {
+          sendJSON(res, 409, { success: false, message: 'Tài khoản này đã tồn tại. Vui lòng chuyển sang tab Đăng nhập!' });
+          return;
+        }
+        throw createErr;
+      }
+
       auth.recordRegister(ip);
       const token = auth.createSession(username);
-      sendJSON(res, 200, { success: true, username, displayName: displayName.trim() }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
+      sendJSON(res, 200, {
+        success: true,
+        token,
+        username,
+        displayName: displayName.trim(),
+        user: {
+          username,
+          displayName: displayName.trim(),
+          role: 'teacher',
+        }
+      }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -272,7 +303,7 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readJsonBody(req);
       const { username, password } = body;
-      const user = auth.findUserByUsername(username);
+      const user = await auth.findUserByUsername(username);
 
       if (!user) {
         const fail = auth.recordLoginFailure(ip);
@@ -289,7 +320,18 @@ const server = http.createServer(async (req, res) => {
 
       auth.recordLoginSuccess(ip);
       const token = auth.createSession(user.username);
-      sendJSON(res, 200, { success: true, username: user.username, displayName: user.displayName }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
+      sendJSON(res, 200, {
+        success: true,
+        token,
+        username: user.username,
+        displayName: user.displayName,
+        user: {
+          username: user.username,
+          displayName: user.displayName,
+          role: user.role || 'teacher',
+          avatar: user.avatar || '01',
+        }
+      }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });
@@ -311,19 +353,28 @@ const server = http.createServer(async (req, res) => {
   if (method === 'GET' && pathname === '/api/auth/me') {
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
-      sendJSON(res, 200, { authenticated: false, user: null });
+      sendJSON(res, 401, { authenticated: false, success: false, user: null });
       return;
     }
-    const user = auth.findUserByUsername(sessionUser.username);
+    const user = await auth.findUserByUsername(sessionUser.username);
     if (!user) {
       auth.deleteSession(sessionUser.token);
-      sendJSON(res, 200, { authenticated: false, user: null }, { 'Set-Cookie': auth.clearSessionCookieHeader(isSecure) });
+      sendJSON(res, 401, { authenticated: false, success: false, user: null }, { 'Set-Cookie': auth.clearSessionCookieHeader(isSecure) });
       return;
     }
     const nameCooldown = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
     const passCooldown = auth.cooldownInfo(user.lastPasswordChangeAt, auth.PASSWORD_CHANGE_COOLDOWN_MS);
     sendJSON(res, 200, {
       authenticated: true,
+      success: true,
+      token: sessionUser.token,
+      username: user.username,
+      displayName: user.displayName,
+      createdAt: user.createdAt,
+      avatar: user.avatar || '01',
+      role: user.role || 'teacher',
+      nameCooldown,
+      passCooldown,
       user: {
         username: user.username,
         displayName: user.displayName,
@@ -344,7 +395,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
       return;
     }
-    const user = auth.findUserByUsername(sessionUser.username);
+    const user = await auth.findUserByUsername(sessionUser.username);
     if (!user) {
       sendJSON(res, 401, { success: false, message: 'Tài khoản không tồn tại.' });
       return;
@@ -515,7 +566,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const examData = await readJsonBody(req);
+      const rawBody = await readJsonBody(req);
+      const examData = (rawBody && rawBody.exam) ? rawBody.exam : rawBody;
       if (!examData || !examData.title) {
         sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
         return;
@@ -714,7 +766,7 @@ const server = http.createServer(async (req, res) => {
         title: body.title || exam.title || 'Phòng thi trực tuyến'
       });
 
-      sendJSON(res, 200, { success: true, room });
+      sendJSON(res, 200, { success: true, room, pin: room.pin });
       return;
     } catch (err) {
       sendJSON(res, 500, { success: false, message: err.message });

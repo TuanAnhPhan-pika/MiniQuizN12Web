@@ -218,11 +218,18 @@
   (async function checkAuth() {
     try {
       const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
-      if (!res.ok) { window.location.href = 'index.html'; return; }
+      if (!res.ok) { window.location.href = 'index.html?needLogin=1'; return; }
       const data = await res.json();
-      document.getElementById('user-chip-label').textContent = data.displayName + ' (' + data.username + ')';
+      if (!data.authenticated) { window.location.href = 'index.html?needLogin=1'; return; }
+      if (data.token && window.MQC_Auth) {
+        window.MQC_Auth.setToken(data.token);
+      }
+      const u = data.user || data;
+      const dName = u.displayName || u.username || 'Thầy Cô';
+      const uName = u.username || '';
+      document.getElementById('user-chip-label').textContent = uName ? `${dName} (${uName})` : dName;
     } catch (err) {
-      window.location.href = 'index.html';
+      window.location.href = 'index.html?needLogin=1';
       return;
     }
 
@@ -533,7 +540,10 @@
   }
 
   async function handleLogout(e) {
-    e.preventDefault();
+    if (e) e.preventDefault();
+    if (window.MQC_Auth) {
+      window.MQC_Auth.clearToken();
+    }
     try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (err) {}
     window.location.href = 'index.html';
   }

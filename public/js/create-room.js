@@ -101,10 +101,18 @@
     try {
       const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
       if (!res.ok) {
-        window.location.href = 'index.html';
+        window.location.href = 'index.html?needLogin=1';
         return;
       }
-      currentUser = await res.json();
+      const data = await res.json();
+      if (!data.authenticated) {
+        window.location.href = 'index.html?needLogin=1';
+        return;
+      }
+      if (data.token && window.MQC_Auth) {
+        window.MQC_Auth.setToken(data.token);
+      }
+      currentUser = data;
       
       // Lấy IP LAN của máy chủ để phục vụ tạo mã QR quét từ máy khác/điện thoại
       try {

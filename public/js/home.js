@@ -213,14 +213,22 @@
   }
 
   /* ── Login/Register modal ── */
-  function openLoginModal() {
-    document.getElementById('login-modal').classList.add('show');
-    switchAuthTab('login');
-    document.getElementById('login-user').focus();
+  function openLoginModal(tab = 'login') {
+    const modal = document.getElementById('login-modal');
+    if (modal) modal.classList.add('show');
+    switchAuthTab(tab);
+    setTimeout(() => {
+      if (tab === 'login') {
+        document.getElementById('login-user')?.focus();
+      } else {
+        document.getElementById('reg-user')?.focus();
+      }
+    }, 50);
   }
 
   function closeLoginModal() {
-    document.getElementById('login-modal').classList.remove('show');
+    const modal = document.getElementById('login-modal');
+    if (modal) modal.classList.remove('show');
   }
 
   function handleModalOverlayClick(e) {
@@ -229,28 +237,58 @@
 
   function switchAuthTab(tab) {
     const isLogin = tab === 'login';
-    document.getElementById('tab-login').classList.toggle('active', isLogin);
-    document.getElementById('tab-register').classList.toggle('active', !isLogin);
-    document.getElementById('form-login').style.display = isLogin ? '' : 'none';
-    document.getElementById('form-register').style.display = isLogin ? 'none' : '';
+    const tabLogin = document.getElementById('tab-login');
+    const tabReg = document.getElementById('tab-register');
+    const formLogin = document.getElementById('form-login');
+    const formReg = document.getElementById('form-register');
+
+    if (tabLogin) tabLogin.classList.toggle('active', isLogin);
+    if (tabReg) tabReg.classList.toggle('active', !isLogin);
+    if (formLogin) formLogin.style.display = isLogin ? '' : 'none';
+    if (formReg) formReg.style.display = isLogin ? 'none' : '';
     hideAuthMessage('error-login');
     hideAuthMessage('error-register');
   }
 
   function showAuthMessage(id, text, isWarning) {
     const el = document.getElementById(id);
+    if (!el) return;
     el.textContent = (isWarning ? '⚠️ ' : '❌ ') + text;
     el.classList.toggle('warning', !!isWarning);
     el.classList.add('show');
   }
+
   function hideAuthMessage(id) {
-    document.getElementById(id).classList.remove('show');
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('show');
   }
 
   async function handleLogin() {
-    const username = document.getElementById('login-user').value.trim();
-    const password = document.getElementById('login-pass').value;
+    const userInput = document.getElementById('login-user');
+    const passInput = document.getElementById('login-pass');
+    const submitBtn = document.querySelector('#form-login .btn-join');
+
+    const username = (userInput?.value || '').trim();
+    const password = passInput?.value || '';
     hideAuthMessage('error-login');
+
+    if (!username) {
+      showAuthMessage('error-login', 'Vui lòng nhập tài khoản.');
+      userInput?.focus();
+      return;
+    }
+    if (!password) {
+      showAuthMessage('error-login', 'Vui lòng nhập mật khẩu.');
+      passInput?.focus();
+      return;
+    }
+
+    const originalBtnText = submitBtn ? submitBtn.textContent : 'Đăng nhập';
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = '⏳ Đang đăng nhập...';
+    }
+
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -260,60 +298,134 @@
       });
       const data = await res.json();
       if (data.success) {
+        if (data.token && window.MQC_Auth) {
+          window.MQC_Auth.setToken(data.token);
+        }
         const urlParams = new URLSearchParams(window.location.search);
         const redirectUrl = urlParams.get('redirect') || 'dashboard.html';
         window.location.href = redirectUrl;
       } else {
-        showAuthMessage('error-login', data.message || 'Tài khoản hoặc mật khẩu không đúng', res.status === 429);
+        showAuthMessage('error-login', data.message || 'Tài khoản hoặc mật khẩu không đúng.', res.status === 429);
       }
     } catch (err) {
-      showAuthMessage('error-login', 'Không thể kết nối tới máy chủ.');
+      showAuthMessage('error-login', 'Không thể kết nối tới máy chủ. Vui lòng thử lại.');
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalBtnText;
+      }
     }
   }
 
-  /* ── Tự động nhận diện user đã đăng nhập & hiển thị nút Bảng điều khiển ── */
+  /* ── Tự động nhận diện user đã đăng nhập & hiển thị nút Bảng điều khiển / Đăng nhập ── */
   let currentUser = null;
-  (async function checkAuthOnHome() {
+
+  function renderHeaderAuth(user) {
+    const wrap = document.getElementById('header-auth-wrap');
+    if (!wrap) return;
+    if (user && (user.username || user.displayName)) {
+      const dName = (user.displayName || user.username || 'Bạn').slice(0, 15);
+      wrap.innerHTML = `
+        <div style="display:inline-flex; align-items:center; gap:8px;">
+          <a href="dashboard.html" class="btn-login" style="background:#0284c7; color:#fff; border:none; text-decoration:none; font-weight:800; display:inline-flex; align-items:center; gap:6px; padding:7px 16px; border-radius:10px; box-shadow:0 3px 8px rgba(2,132,199,0.3);" title="Vào Bảng điều khiển">
+            <span>📊 Bảng điều khiển</span>
+          </a>
+          <button type="button" onclick="logoutOnHome()" class="btn-login" style="background:#ef4444; color:#fff; border:none; font-weight:700; padding:7px 12px; border-radius:10px; cursor:pointer;" title="Đăng xuất khỏi ${dName}">
+            <span>Đăng xuất</span>
+          </button>
+        </div>
+      `;
+    } else {
+      wrap.innerHTML = `
+        <button class="btn-login" onclick="openLoginModal('login')">Đăng nhập / Đăng ký</button>
+        <div class="tooltip">Đăng nhập để sử dụng thêm nhiều tính năng hơn</div>
+      `;
+    }
+  }
+
+  async function checkAuthOnHome() {
     try {
       const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
       if (res.ok) {
         const data = await res.json();
-        currentUser = data;
-        const wrap = document.getElementById('header-auth-wrap');
-        if (wrap) {
-          wrap.innerHTML = `
-            <a href="dashboard.html" class="btn-login" style="background:#0284c7; color:#fff; border:none; text-decoration:none; font-weight:800; display:inline-flex; align-items:center; gap:6px; padding:7px 16px; border-radius:10px; box-shadow:0 3px 8px rgba(2,132,199,0.3);">
-              <span>📊 Bảng điều khiển</span>
-            </a>
-          `;
-        }
-      } else {
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get('needLogin') === '1') {
-          openLoginModal();
-          showAuthMessage('error-login', 'Vui lòng đăng nhập để truy cập Bảng điều khiển', true);
+        if (data.authenticated && (data.user || data.username)) {
+          currentUser = data.user || data;
+          if (data.token && window.MQC_Auth) {
+            window.MQC_Auth.setToken(data.token);
+          }
+          renderHeaderAuth(currentUser);
+          return;
         }
       }
-    } catch (e) {}
-  })();
+      currentUser = null;
+      renderHeaderAuth(null);
+
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('needLogin') === '1') {
+        openLoginModal('login');
+        showAuthMessage('error-login', 'Vui lòng đăng nhập để truy cập Bảng điều khiển', true);
+      }
+    } catch (e) {
+      renderHeaderAuth(null);
+    }
+  }
+
+  checkAuthOnHome();
+
+  window.logoutOnHome = async function() {
+    if (window.MQC_Auth) {
+      window.MQC_Auth.clearToken();
+    }
+    currentUser = null;
+    renderHeaderAuth(null);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch(e) {}
+  };
 
   async function handleRegister() {
-    const username = document.getElementById('reg-user').value.trim();
-    const displayName = document.getElementById('reg-name').value.trim();
-    const password = document.getElementById('reg-pass').value;
-    const confirmPassword = document.getElementById('reg-confirm').value;
+    const userInput = document.getElementById('reg-user');
+    const nameInput = document.getElementById('reg-name');
+    const passInput = document.getElementById('reg-pass');
+    const confirmInput = document.getElementById('reg-confirm');
+    const submitBtn = document.getElementById('btn-submit-register');
+
+    const username = (userInput?.value || '').trim();
+    const displayName = (nameInput?.value || '').trim();
+    const password = passInput?.value || '';
+    const confirmPassword = confirmInput?.value || '';
     hideAuthMessage('error-register');
 
-    if (!isUsernameValidForRegister) {
-      const feedback = document.getElementById('reg-user-feedback').textContent;
-      showAuthMessage('error-register', feedback || 'Vui lòng nhập tài khoản hợp lệ');
+    if (!username || username.length < 3 || username.length > 20 || !/^[a-zA-Z0-9_]+$/.test(username)) {
+      showAuthMessage('error-register', 'Tài khoản phải dài 3-20 ký tự (chữ, số hoặc gạch dưới).');
+      userInput?.focus();
+      return;
+    }
+
+    if (!displayName) {
+      showAuthMessage('error-register', 'Vui lòng nhập tên hiển thị của bạn.');
+      nameInput?.focus();
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      showAuthMessage('error-register', 'Mật khẩu phải có ít nhất 6 ký tự.');
+      passInput?.focus();
       return;
     }
 
     if (password !== confirmPassword) {
-      showAuthMessage('error-register', 'Xác nhận mật khẩu không khớp');
+      showAuthMessage('error-register', 'Xác nhận mật khẩu không khớp.');
+      confirmInput?.focus();
       return;
     }
+
+    const originalBtnText = submitBtn ? submitBtn.textContent : 'Đăng ký';
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = '⏳ Đang đăng ký...';
+    }
+
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -323,14 +435,30 @@
       });
       const data = await res.json();
       if (data.success) {
+        if (data.token && window.MQC_Auth) {
+          window.MQC_Auth.setToken(data.token);
+        }
         window.location.href = 'dashboard.html';
       } else {
-        showAuthMessage('error-register', data.message || 'Đăng ký thất bại', res.status === 429);
+        showAuthMessage('error-register', data.message || 'Đăng ký thất bại.', res.status === 429);
       }
     } catch (err) {
-      showAuthMessage('error-register', 'Không thể kết nối tới máy chủ.');
+      showAuthMessage('error-register', 'Không thể kết nối tới máy chủ. Vui lòng thử lại.');
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalBtnText;
+      }
     }
   }
+
+  // Export functions to window
+  window.openLoginModal = openLoginModal;
+  window.closeLoginModal = closeLoginModal;
+  window.handleModalOverlayClick = handleModalOverlayClick;
+  window.switchAuthTab = switchAuthTab;
+  window.handleLogin = handleLogin;
+  window.handleRegister = handleRegister;
 
   /* ── Kiểm tra tài khoản thời gian thực khi đăng ký ── */
   let checkUsernameTimeout = null;

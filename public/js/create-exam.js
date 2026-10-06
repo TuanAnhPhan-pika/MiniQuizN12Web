@@ -4,13 +4,17 @@
   async function checkAuthAndGetUser() {
     try {
       const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
-      if (!res.ok) { window.location.href = 'index.html'; return false; }
+      if (!res.ok) { window.location.href = 'index.html?needLogin=1'; return false; }
       const data = await res.json();
+      if (!data.authenticated) { window.location.href = 'index.html?needLogin=1'; return false; }
+      if (data.token && window.MQC_Auth) {
+        window.MQC_Auth.setToken(data.token);
+      }
       CURRENT_USER = data.username;
       CURRENT_DISPLAY_NAME = data.displayName || data.username;
       return true;
     } catch (err) {
-      window.location.href = 'index.html';
+      window.location.href = 'index.html?needLogin=1';
       return false;
     }
   }
