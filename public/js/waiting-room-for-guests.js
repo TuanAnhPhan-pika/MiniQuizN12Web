@@ -143,7 +143,13 @@
   let pollInterval = null;
 
   async function joinWaitingRoom() {
-    // 1. Lấy thông tin phòng từ customRooms nếu có sẵn
+    // 1. Dọn dẹp cờ trạng thái cũ của phòng để tránh việc thí sinh bị tự động nhảy vào làm bài
+    try {
+      localStorage.removeItem(`mqc_room_status_${PIN}`);
+      sessionStorage.removeItem(`mqc_room_status_${PIN}`);
+    } catch (e) {}
+
+    // Lấy thông tin phòng từ customRooms nếu có sẵn
     try {
       const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
       if (customRooms[PIN] && customRooms[PIN].title) {
@@ -184,23 +190,31 @@
           syncLocalRoomState(currentPlayers, data.status);
         } else {
           // Xử lý thông báo lỗi (nickname trùng hoặc phòng khóa/đầy)
-          if (data.message) {
-            alert(data.message);
-          }
-          if (data.locked || data.full) {
-            window.location.href = 'index.html';
-            return;
-          }
+          alert(data.message || 'Không thể tham gia phòng thi.');
+          window.location.href = 'index.html';
+          return;
         }
       } else {
-        // Nếu server trả về 404 (chưa có phòng trên server, fallback dùng local)
-        fallbackLocalJoin();
+        if (PIN.startsWith('TEST-')) {
+          fallbackLocalJoin();
+        } else {
+          alert('Phòng thi không tồn tại trên máy chủ hoặc đã kết thúc!');
+          window.location.href = 'index.html';
+          return;
+        }
       }
     } catch (err) {
-      fallbackLocalJoin();
+      if (PIN.startsWith('TEST-')) {
+        fallbackLocalJoin();
+      } else {
+        console.error('Lỗi kết nối phòng thi:', err);
+        alert('Không thể kết nối đến máy chủ phòng thi. Vui lòng kiểm tra lại mạng hoặc mã PIN!');
+        window.location.href = 'index.html';
+        return;
+      }
     }
 
-    // 3. Bắt đầu polling đồng bộ định kỳ mỗi 1.2s
+    // 3. Bắt đầu polling đồng bộ định kỳ mỗi 1000ms
     startPollingStatus();
   }
 
@@ -227,7 +241,7 @@
   function syncLocalRoomState(players, status) {
     try {
       localStorage.setItem(`mqc_waiting_players_${PIN}`, JSON.stringify(players));
-      if (status) {
+      if (status && status !== 'waiting') {
         localStorage.setItem(`mqc_room_status_${PIN}`, status);
       }
     } catch (e) {}
@@ -273,41 +287,41 @@
         }
       } catch (e) {}
 
-      // 2. Fallback kiểm tra từ localStorage
-      try {
-        const localStatus = localStorage.getItem(`mqc_room_status_${PIN}`);
-        if (localStatus === 'cancelled') {
-          handleRoomCancelled();
-          return;
-        }
-        if (localStatus === 'countdown') {
-          startGuestCountdown(5);
-          return;
-        }
-        if (localStatus === 'started') {
-          startGuestCountdown(0);
-          return;
-        }
-        const localPlayers = JSON.parse(localStorage.getItem(`mqc_waiting_players_${PIN}`) || '[]');
-        if (localPlayers.length > 0) {
-          renderPlayers(localPlayers);
-        }
-      } catch (err) {}
-    }, 1200);
+      // 2. Fallback kiểm tra từ localStorage chỉ áp dụng khi thi thử TEST-*
+      if (PIN.startsWith('TEST-')) {
+        try {
+          const localStatus = localStorage.getItem(`mqc_room_status_${PIN}`);
+          if (localStatus === 'cancelled') {
+            handleRoomCancelled();
+            return;
+          }
+          if (localStatus === 'countdown') {
+            startGuestCountdown(5);
+            return;
+          }
+          if (localStatus === 'started') {
+            startGuestCountdown(0);
+            return;
+          }
+        } catch (err) {}
+      }
+    }, 1000);
   }
 
-  // Lắng nghe storage event (cho phép các tab khác nhau trên cùng máy phản ứng ngay lập tức khi host bấm start hoặc hủy phòng)
+  // Lắng nghe storage event (cho phép các tab thi thử phản ứng tức thì)
   window.addEventListener('storage', function(e) {
-    if (e.key === `mqc_room_status_${PIN}`) {
-      if (e.newValue === 'countdown') startGuestCountdown(5);
-      if (e.newValue === 'started') startGuestCountdown(0);
-      if (e.newValue === 'cancelled') handleRoomCancelled();
-    }
-    if (e.key === `mqc_waiting_players_${PIN}`) {
-      try {
-        const updated = JSON.parse(e.newValue || '[]');
-        renderPlayers(updated);
-      } catch (err) {}
+    if (PIN.startsWith('TEST-')) {
+      if (e.key === `mqc_room_status_${PIN}`) {
+        if (e.newValue === 'countdown') startGuestCountdown(5);
+        if (e.newValue === 'started') startGuestCountdown(0);
+        if (e.newValue === 'cancelled') handleRoomCancelled();
+      }
+      if (e.key === `mqc_waiting_players_${PIN}`) {
+        try {
+          const updated = JSON.parse(e.newValue || '[]');
+          renderPlayers(updated);
+        } catch (err) {}
+      }
     }
   });
 
@@ -375,8 +389,9 @@
     window.location.href = target;
   }
 
-  // Tự động giải phóng chỗ khi tắt tab hoặc rời trang
+  // Tự động giải phóng chỗ khi tắt tab hoặc rời trang (chỉ khi còn đang ở phòng chờ, KHÔNG gửi khi đã chuyển vào phòng thi)
   window.addEventListener('pagehide', function() {
+    if (redirected || guestCountdownActive) return;
     if (PIN && myPlayerId) {
       const myToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
       const payload = JSON.stringify({ id: myPlayerId, nick: NICKNAME, playerToken: myToken });

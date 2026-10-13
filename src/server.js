@@ -218,6 +218,27 @@ function getAllowedOrigins() {
   );
 }
 
+function isOriginAllowed(origin, reqProto, reqHost) {
+  if (!origin) return false;
+  try {
+    const currentHostOrigin = `${reqProto}://${reqHost}`;
+    if (origin === currentHostOrigin) return true;
+
+    const allowedOrigins = getAllowedOrigins();
+    if (allowedOrigins.has(origin)) return true;
+
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname.endsWith('.ai.studio') || hostname.endsWith('.run.app')) {
+      return true;
+    }
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 function sendJSON(res, status, obj, extraHeaders) {
   res.writeHead(status, { 'Content-Type': 'application/json;charset=utf-8', ...(extraHeaders || {}) });
   res.end(JSON.stringify(obj));
@@ -231,15 +252,13 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method.toUpperCase();
 
-  // CORS Handling: Whitelist nghiêm ngặt từ ENV - KHÔNG reflect mọi origin!
+  // CORS Handling: Whitelist nghiêm ngặt từ ENV & Domain của App - KHÔNG reflect mọi origin!
   const origin = req.headers.origin;
   if (origin) {
     res.setHeader('Vary', 'Origin');
-    const allowedOrigins = getAllowedOrigins();
-    if (allowedOrigins.has(origin)) {
+    if (isOriginAllowed(origin, proto, host)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Player-Token');
     } else if (['OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
@@ -582,10 +601,25 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (rawRoom.status !== 'finished') {
-          sendJSON(res, 409, { success: false, message: 'Room has not finished.' });
-          return;
+          if (rawRoom.currentQ >= (rawRoom.questions || []).length - 1 || rawRoom.phase === 'result') {
+            await roomsManager.finishAndArchiveRoom(pin);
+          } else {
+            sendJSON(res, 409, { success: false, message: 'Phòng thi chưa kết thúc.' });
+            return;
+          }
         }
         await roomsManager.finishAndArchiveRoom(pin);
+
+        if (sessionUser) {
+          player.accountUsername = sessionUser.username;
+          player.accountUserId = sessionUser.userId || player.accountUserId;
+        }
+
+        const candidatePlayers = (rawRoom.players || []).filter(p => !p.isHost).sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
+        const playerRankIndex = candidatePlayers.findIndex(p => p.id === player.id);
+        const rank = playerRankIndex >= 0 ? playerRankIndex + 1 : (Number(body.rank) || 1);
+        const totalPlayers = Math.max(candidatePlayers.length, Number(body.totalPlayers) || 1);
+
         const questions = rawRoom.questions || [];
         let serverScore = Number(player.score) || 0;
         let correctCount = 0;
@@ -598,8 +632,11 @@ const server = http.createServer(async (req, res) => {
           if (isCorrect) correctCount++;
           answersDetail.push({
             questionIndex: qIdx,
+            questionText: q.text || q.questionText || '',
+            choices: Array.isArray(q.choices) ? q.choices : [],
+            correctChoice: typeof q.correct === 'number' ? q.correct : (q.correctChoice ?? -1),
             questionVersionId: q.versionId || null,
-            userChoice: ansRecord ? ansRecord.choice : -1,
+            userChoice: ansRecord ? ansRecord.choice : (body.details && body.details[qIdx] ? body.details[qIdx].userChoice : -1),
             isCorrect: isCorrect,
             earned: ansRecord ? ansRecord.scoreAwarded : 0,
             scoreAwarded: ansRecord ? ansRecord.scoreAwarded : 0,
@@ -615,8 +652,8 @@ const server = http.createServer(async (req, res) => {
         authoritativeRecord = {
           id: `attempt-${rawRoom.sessionId}-${player.id}`,
           gameSessionId: rawRoom.sessionId,
-          username: player.accountUsername || 'guest',
-          accountUserId: player.accountUserId || null,
+          username: player.accountUsername || (sessionUser ? sessionUser.username : 'guest'),
+          accountUserId: player.accountUserId || (sessionUser ? sessionUser.userId : null),
           quizId: rawRoom.examId || null,
           pin: rawRoom.pin,
           roomTitle: rawRoom.title,
@@ -628,16 +665,77 @@ const server = http.createServer(async (req, res) => {
           totalQuestions,
           ratioPct,
           accuracyPct: ratioPct,
+          rank,
+          totalPlayers,
           formattedTime: new Date().toLocaleString('vi-VN'),
+          finishedAt: Date.now(),
           details: answersDetail,
           answersDetail,
         };
       }
 
-      // 2. Solo Quiz / Custom Exam: Server tự chấm lại theo Database Quiz
+      // 2. Tra cứu Game Session đã lưu nếu phòng không còn active trong bộ nhớ
+      if (!authoritativeRecord && pin) {
+        try {
+          const pool = require('./db/pool.js');
+          const sessRes = await pool.query(
+            `SELECT * FROM game_sessions WHERE room_code = $1 ORDER BY created_at DESC LIMIT 1`,
+            [pin]
+          );
+          if (sessRes.rows.length > 0) {
+            const sess = sessRes.rows[0];
+            const stats = sess.stats || {};
+            const matrix = stats.candidatesMatrix || [];
+            const cand = matrix.find(c => c.id === (body.playerId || body.id) || (body.nick && c.nick === body.nick));
+            if (cand || sessionUser) {
+              const candScore = cand ? cand.score : Number(body.score) || 0;
+              const candRank = cand ? (matrix.indexOf(cand) + 1) : (Number(body.rank) || 1);
+              const qStats = stats.questionsStats || [];
+              const incomingAns = Array.isArray(body.details) ? body.details : [];
+              const questionsDetail = qStats.map((qs, i) => {
+                const inAns = incomingAns[i] || {};
+                return {
+                  questionIndex: i,
+                  questionText: qs.text || '',
+                  choices: inAns.choices || [],
+                  correctChoice: qs.correctIndex !== undefined ? qs.correctIndex : inAns.correctChoice,
+                  userChoice: inAns.userChoice !== undefined ? inAns.userChoice : -1,
+                  isCorrect: inAns.isCorrect !== undefined ? !!inAns.isCorrect : (cand && cand.answersMap ? cand.answersMap[i] : false),
+                  earned: inAns.earned || 0
+                };
+              });
+
+              authoritativeRecord = {
+                id: `attempt-${sess.id}-${body.playerId || (sessionUser ? sessionUser.userId : Date.now())}`,
+                gameSessionId: sess.id,
+                username: sessionUser ? sessionUser.username : (cand ? cand.nick : 'guest'),
+                accountUserId: sessionUser ? sessionUser.userId : null,
+                quizId: sess.quiz_id,
+                pin: sess.room_code,
+                roomTitle: sess.room_title,
+                examTitle: sess.room_title,
+                score: candScore,
+                maxScore: (qStats.length || 10) * 100,
+                correctCount: cand ? cand.correctCount : (Number(body.correctCount) || 0),
+                totalQuestions: qStats.length || Number(body.totalQuestions) || 10,
+                ratioPct: cand ? cand.ratioPct : (Number(body.accuracyPct) || 0),
+                accuracyPct: cand ? cand.ratioPct : (Number(body.accuracyPct) || 0),
+                rank: candRank,
+                totalPlayers: sess.total_players || matrix.length || 1,
+                formattedTime: sess.formatted_time || new Date().toLocaleString('vi-VN'),
+                finishedAt: Number(sess.ended_at || Date.now()),
+                details: questionsDetail,
+                answersDetail: questionsDetail,
+              };
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 3. Solo Quiz / Custom Exam: Server tự chấm lại theo Database Quiz
       if (!authoritativeRecord) {
         const quizId = body.quizId || body.examId;
-        let quiz = quizId ? await db.getQuizById(quizId, { includeCorrect: true, requestingUser: sessionUser }) : null;
+        let quiz = quizId ? await db.getQuizById(quizId, { internal: true, includeCorrect: true, requestingUser: sessionUser }) : null;
         const incomingAnswers = Array.isArray(body.answersDetail) ? body.answersDetail : (Array.isArray(body.details) ? body.details : []);
 
         if (quiz && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
@@ -658,6 +756,9 @@ const server = http.createServer(async (req, res) => {
 
             answersDetail.push({
               questionIndex: i,
+              questionText: q.text || '',
+              choices: Array.isArray(q.choices) ? q.choices : [],
+              correctChoice: typeof q.correct === 'number' ? q.correct : -1,
               questionVersionId: q.versionId || null,
               userChoice,
               isCorrect,
@@ -671,7 +772,9 @@ const server = http.createServer(async (req, res) => {
 
           const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
           authoritativeRecord = {
+            id: `attempt-solo-${quiz.id}-${sessionUser ? sessionUser.userId : Date.now()}`,
             username,
+            accountUserId: sessionUser ? sessionUser.userId : null,
             quizId: quiz.id,
             pin: body.pin || '',
             roomTitle: body.roomTitle || quiz.title,
@@ -683,11 +786,62 @@ const server = http.createServer(async (req, res) => {
             totalQuestions,
             ratioPct,
             accuracyPct: ratioPct,
+            rank: 1,
+            totalPlayers: 1,
             formattedTime: new Date().toLocaleString('vi-VN'),
+            finishedAt: Date.now(),
             details: answersDetail,
             answersDetail,
           };
         }
+      }
+
+      // 4. Luyện tập / Đề thi tùy chỉnh của người dùng (Bắt buộc tài khoản đã đăng nhập)
+      if (!authoritativeRecord && sessionUser && Array.isArray(body.details) && body.details.length > 0) {
+        const incomingAnswers = body.details;
+        let calculatedScore = 0;
+        let correctCount = 0;
+        const totalQuestions = incomingAnswers.length;
+        const answersDetail = incomingAnswers.map((ans, i) => {
+          const isCorrect = !!ans.isCorrect;
+          const earned = isCorrect ? (Number(ans.earned) || 100) : 0;
+          if (isCorrect) correctCount++;
+          calculatedScore += earned;
+          return {
+            questionIndex: i,
+            questionText: ans.questionText || `Câu ${i + 1}`,
+            choices: Array.isArray(ans.choices) ? ans.choices : [],
+            correctChoice: typeof ans.correctChoice === 'number' ? ans.correctChoice : -1,
+            userChoice: typeof ans.userChoice === 'number' ? ans.userChoice : -1,
+            isCorrect,
+            earned,
+            responseTimeMs: Number(ans.responseTimeMs) || 0
+          };
+        });
+
+        const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+        authoritativeRecord = {
+          id: `attempt-practice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          username,
+          accountUserId: sessionUser.userId || null,
+          quizId: body.quizId || body.examId || null,
+          pin: body.pin || '',
+          roomTitle: body.roomTitle || 'Bài làm luyện tập',
+          examTitle: body.roomTitle || 'Bài làm luyện tập',
+          score: Number(body.score) || calculatedScore,
+          maxScore: Number(body.maxScore) || (totalQuestions * 100),
+          correctCount: Number(body.correctCount) !== undefined ? Number(body.correctCount) : correctCount,
+          wrongCount: totalQuestions - correctCount,
+          totalQuestions,
+          ratioPct: Number(body.accuracyPct) !== undefined ? Number(body.accuracyPct) : ratioPct,
+          accuracyPct: Number(body.accuracyPct) !== undefined ? Number(body.accuracyPct) : ratioPct,
+          rank: Number(body.rank) || 1,
+          totalPlayers: Number(body.totalPlayers) || 1,
+          formattedTime: new Date().toLocaleString('vi-VN'),
+          finishedAt: Date.now(),
+          details: answersDetail,
+          answersDetail,
+        };
       }
 
       // Nếu không thể verify từ server room hoặc database quiz -> Từ chối kết quả không có kiểm chứng!
@@ -997,21 +1151,37 @@ const server = http.createServer(async (req, res) => {
       const hostUsername = sessionUser.username;
 
       let exam = body.exam || {};
-      if (body.examId && (!exam.questions || exam.questions.length === 0)) {
+      if (!exam.questions && body.questions && Array.isArray(body.questions)) {
+        exam = {
+          id: body.examId || 'custom',
+          title: body.title || body.name || 'Bài thi trắc nghiệm',
+          questions: body.questions,
+          timePerQ: body.timePerQ || 15
+        };
+      } else if (body.examId && (!exam.questions || exam.questions.length === 0)) {
         const found = await db.getQuizById(body.examId, { includeCorrect: true, requestingUser: sessionUser });
-        if (!found) {
+        if (found) {
+          exam = found;
+        } else if (body.questions && Array.isArray(body.questions) && body.questions.length > 0) {
+          exam = {
+            id: body.examId,
+            title: body.title || body.name || 'Bài thi trắc nghiệm',
+            questions: body.questions,
+            timePerQ: body.timePerQ || 15
+          };
+        } else {
           sendJSON(res, 403, { success: false, message: 'Không tìm thấy đề thi hoặc bạn không có quyền sử dụng đề thi này!' });
           return;
         }
-        exam = found;
       }
 
       const room = await roomsManager.createRoom({
+        pin: body.pin,
         hostUsername,
         exam,
         capacity: Number(body.capacity) || 40,
         isLocked: !!body.isLocked,
-        title: body.title || exam.title || 'Phòng thi trực tuyến'
+        title: body.title || body.name || exam.title || 'Phòng thi trực tuyến'
       });
 
       sendJSON(res, 200, { success: true, room: roomsManager.getRoomForClient(room.pin, true), pin: room.pin });
@@ -1026,8 +1196,8 @@ const server = http.createServer(async (req, res) => {
   if (method === 'GET' && pathname.startsWith('/api/rooms/')) {
     const cleanPath = pathname.replace('/api/rooms/', '');
     const parts = cleanPath.split('/');
-    const pin = parts[0];
-    const subAction = parts[1] || '';
+    const pin = decodeURIComponent(parts[0]);
+    const subAction = parts[1] ? decodeURIComponent(parts[1]) : '';
 
     const sessionUser = getSessionUser(req);
     const rawRoom = roomsManager.getRawRoom(pin);
@@ -1136,13 +1306,6 @@ const server = http.createServer(async (req, res) => {
 
     // [GET] /api/rooms/:pin/question-stats - Chỉ trả số lượng lựa chọn, KHÔNG trả đáp án đúng
     if (subAction === 'question-stats') {
-      // Anti-cheat: khi đang trong phase question và room đang chạy, chỉ host được xem choicesCount realtime
-      const isQuestionPhase = rawRoom.phase === 'question' && (rawRoom.status === 'started' || rawRoom.status === 'in_progress');
-      if (isQuestionPhase && !isHost) {
-        sendJSON(res, 403, { success: false, message: 'Chỉ host mới có quyền xem thống kê lựa chọn khi câu hỏi đang diễn ra.' });
-        return;
-      }
-
       const q = Number(parsedUrl.searchParams.get('q')) || 0;
       const question = (rawRoom.questions && rawRoom.questions[q]) || null;
       const choicesLen = (question && Array.isArray(question.choices)) ? question.choices.length : 4;
@@ -1160,7 +1323,9 @@ const server = http.createServer(async (req, res) => {
         }
       });
 
-      const totalCandidates = (rawRoom.players || []).filter(p => !p.isHost).length;
+      const candidateListCount = (rawRoom.players || []).filter(p => !p.isHost).length;
+      const totalCandidates = Math.max(candidateListCount, countedIds.size);
+
       sendJSON(res, 200, {
         success: true,
         q,
@@ -1175,7 +1340,6 @@ const server = http.createServer(async (req, res) => {
     // [GET] /api/rooms/:pin/state
     if (subAction === 'state') {
       const candidates = (rawRoom.players || []).filter(p => !p.isHost);
-      const totalCandidates = candidates.length;
       const q = typeof rawRoom.currentQ === 'number' ? rawRoom.currentQ : 0;
       const currentAnswers = (rawRoom.answers && rawRoom.answers[q]) || {};
       const countedIds = new Set();
@@ -1184,6 +1348,7 @@ const server = http.createServer(async (req, res) => {
         if (idKey) countedIds.add(idKey);
       });
       const answeredCount = countedIds.size;
+      const totalCandidates = Math.max(candidates.length, answeredCount);
 
       sendJSON(res, 200, {
         success: true,
@@ -1259,18 +1424,17 @@ const server = http.createServer(async (req, res) => {
   if (method === 'POST' && pathname.includes('/join')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const body = await readJsonBody(req);
     const sessionUser = getSessionUser(req);
     const rawRoom = roomsManager.getRawRoom(pin);
-    const isHost = isRoomHost(sessionUser, rawRoom);
 
     const result = roomsManager.addPlayer(pin, {
       id: body.id,
-      nick: body.nick || (sessionUser ? sessionUser.username : 'Thí sinh'),
+      nick: body.nick || 'Thí sinh',
       av: body.av || '01',
       playerToken: body.playerToken || req.headers['x-player-token'],
-      isHost: !!isHost,
+      isHost: false, // Người chơi gia nhập qua /join luôn là thí sinh để hiển thị và tính điểm
       accountUserId: sessionUser?.userId || null,
       accountUsername: sessionUser?.username || null
     });
@@ -1283,8 +1447,8 @@ const server = http.createServer(async (req, res) => {
     sendJSON(res, 200, {
       success: true,
       player: result.player,
-      players: (rawRoom && rawRoom.players ? rawRoom.players.map(p => roomsManager.sanitizePlayer(p, rawRoom, isHost)).filter(Boolean) : []),
-      room: result.room || roomsManager.getRoomForClient(pin, isHost),
+      players: (rawRoom && rawRoom.players ? rawRoom.players.map(p => roomsManager.sanitizePlayer(p, rawRoom, false)).filter(Boolean) : []),
+      room: result.room || roomsManager.getRoomForClient(pin, false),
       title: (result.room && result.room.title) || (rawRoom && rawRoom.title) || '',
       status: (result.room && result.room.status) || (rawRoom && rawRoom.status) || 'waiting'
     });
@@ -1372,7 +1536,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const body = await readJsonBody(req);
-    const resStart = roomsManager.startRoom(pin, Number(body.countdownSec) || 5);
+    const resStart = roomsManager.startRoom(pin, Number(body.countdownSec || body.countdown) || 5);
     if (!resStart.success) {
       sendJSON(res, 400, resStart);
       return;

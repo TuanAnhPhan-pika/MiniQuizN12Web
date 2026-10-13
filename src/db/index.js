@@ -656,31 +656,48 @@ async function getUserAttempts(username) {
       if (error || !data) return [];
       const out = [];
       for (const a of data) {
-        const { data: ansList } = await supabase
-          .from('attempt_answers')
-          .select('*')
-          .eq('attempt_id', a.id)
-          .order('question_index', { ascending: true });
-
-        out.push({
-          id: a.id,
-          pin: a.pin || '',
-          roomTitle: a.room_title || '',
-          examTitle: a.exam_title || '',
-          score: a.score,
-          correctCount: a.correct_count,
-          totalQuestions: a.total_questions,
-          ratioPct: a.ratio_pct,
-          formattedTime: a.formatted_time,
-          createdAt: Number(a.created_at),
-          answersDetail: (ansList || []).map(ans => ({
+        let details = a.details;
+        if (typeof details === 'string') {
+          try { details = JSON.parse(details); } catch (e) { details = null; }
+        }
+        if (!Array.isArray(details) || details.length === 0) {
+          const { data: ansList } = await supabase
+            .from('attempt_answers')
+            .select('*')
+            .eq('attempt_id', a.id)
+            .order('question_index', { ascending: true });
+          details = (ansList || []).map(ans => ({
             questionIndex: ans.question_index,
             userChoice: ans.user_choice,
             isCorrect: ans.is_correct,
             earned: ans.score_awarded,
             responseTimeMs: ans.response_time_ms,
             streak: ans.streak_after,
-          }))
+          }));
+        }
+
+        const timeVal = Number(a.finished_at || a.created_at || Date.now());
+        const accuracyPct = a.ratio_pct !== undefined && a.ratio_pct !== null ? a.ratio_pct : (a.total_questions > 0 ? Math.round((a.correct_count / a.total_questions) * 100) : 0);
+
+        out.push({
+          id: a.id,
+          pin: a.pin || '',
+          roomTitle: a.room_title || a.exam_title || '',
+          examTitle: a.exam_title || a.room_title || '',
+          score: a.score,
+          maxScore: a.max_score || ((a.total_questions || 0) * 100) || 100,
+          correctCount: a.correct_count,
+          wrongCount: a.wrong_count || (a.total_questions - a.correct_count),
+          totalQuestions: a.total_questions,
+          ratioPct: accuracyPct,
+          accuracyPct: accuracyPct,
+          rank: a.rank || 1,
+          totalPlayers: a.total_players || 1,
+          formattedTime: a.formatted_time || new Date(timeVal).toLocaleString('vi-VN'),
+          finishedAt: timeVal,
+          createdAt: Number(a.created_at || timeVal),
+          details: details,
+          answersDetail: details
         });
       }
       return out;
@@ -690,27 +707,91 @@ async function getUserAttempts(username) {
   // PG Fallback
   const res = await pg.query(`SELECT * FROM attempts WHERE LOWER(user_id) = $1 ORDER BY created_at DESC`, [lower]);
   const out = [];
+  if (res.rows.length === 0) return out;
+
+  const attemptIds = res.rows.map(r => r.id);
+  let ansRows = [];
+  try {
+    const ansRes = await pg.query(`
+      SELECT aa.attempt_id, aa.question_index, aa.user_choice, aa.is_correct, aa.score_awarded, aa.response_time_ms, aa.streak_after,
+             qv.content AS q_text, qo.content AS opt_content, qo.is_correct AS opt_is_correct, qo.order_index AS opt_order_index
+      FROM attempt_answers aa
+      LEFT JOIN question_versions qv ON aa.question_version_id = qv.id
+      LEFT JOIN question_options qo ON qo.question_version_id = aa.question_version_id
+      WHERE aa.attempt_id = ANY($1)
+      ORDER BY aa.attempt_id, aa.question_index ASC, qo.order_index ASC
+    `, [attemptIds]);
+    ansRows = ansRes.rows;
+  } catch (e) {
+    ansRows = [];
+  }
+
+  // Gom nhóm theo attempt_id -> question_index
+  const attemptAnswersMap = new Map();
+  for (const row of ansRows) {
+    if (!attemptAnswersMap.has(row.attempt_id)) {
+      attemptAnswersMap.set(row.attempt_id, new Map());
+    }
+    const qMap = attemptAnswersMap.get(row.attempt_id);
+    if (!qMap.has(row.question_index)) {
+      qMap.set(row.question_index, {
+        questionIndex: row.question_index,
+        questionText: row.q_text || `Câu hỏi ${row.question_index + 1}`,
+        choices: [],
+        correctChoice: -1,
+        userChoice: row.user_choice,
+        isCorrect: row.is_correct,
+        earned: row.score_awarded,
+        responseTimeMs: row.response_time_ms,
+        streak: row.streak_after,
+      });
+    }
+    const qObj = qMap.get(row.question_index);
+    if (row.opt_content !== null && row.opt_content !== undefined) {
+      qObj.choices.push(row.opt_content);
+      if (row.opt_is_correct) {
+        qObj.correctChoice = qObj.choices.length - 1;
+      }
+    }
+  }
+
   for (const a of res.rows) {
-    const ansRes = await pg.query(`SELECT * FROM attempt_answers WHERE attempt_id = $1 ORDER BY question_index ASC`, [a.id]);
+    let details = a.details;
+    if (typeof details === 'string') {
+      try { details = JSON.parse(details); } catch (e) { details = null; }
+    }
+    if (!Array.isArray(details) || details.length === 0) {
+      const qMap = attemptAnswersMap.get(a.id);
+      if (qMap) {
+        details = Array.from(qMap.values());
+      } else {
+        details = [];
+      }
+    }
+
+    const accuracyPct = a.ratio_pct !== undefined && a.ratio_pct !== null ? a.ratio_pct : (a.total_questions > 0 ? Math.round((a.correct_count / a.total_questions) * 100) : 0);
+    const maxScore = a.max_score || ((a.total_questions || 0) * 100) || 100;
+    const timeVal = Number(a.finished_at || a.created_at || Date.now());
+
     out.push({
       id: a.id,
       pin: a.pin || '',
-      roomTitle: a.room_title || '',
-      examTitle: a.exam_title || '',
+      roomTitle: a.room_title || a.exam_title || '',
+      examTitle: a.exam_title || a.room_title || '',
       score: a.score,
+      maxScore: maxScore,
       correctCount: a.correct_count,
+      wrongCount: a.wrong_count || (a.total_questions - a.correct_count),
       totalQuestions: a.total_questions,
-      ratioPct: a.ratio_pct,
-      formattedTime: a.formatted_time,
-      createdAt: Number(a.created_at),
-      answersDetail: ansRes.rows.map(ans => ({
-        questionIndex: ans.question_index,
-        userChoice: ans.user_choice,
-        isCorrect: ans.is_correct,
-        earned: ans.score_awarded,
-        responseTimeMs: ans.response_time_ms,
-        streak: ans.streak_after,
-      }))
+      ratioPct: accuracyPct,
+      accuracyPct: accuracyPct,
+      rank: a.rank || 1,
+      totalPlayers: a.total_players || 1,
+      formattedTime: a.formatted_time || new Date(timeVal).toLocaleString('vi-VN'),
+      finishedAt: timeVal,
+      createdAt: Number(a.created_at || timeVal),
+      details: details,
+      answersDetail: details,
     });
   }
   return out;
@@ -719,7 +800,11 @@ async function getUserAttempts(username) {
 async function saveAttempt(record) {
   const attemptId = record.id || `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const now = record.createdAt || record.finishedAt || Date.now();
+  const finishedAt = record.finishedAt || now;
   const user = String(record.username || record.userId || 'guest').toLowerCase();
+  const rank = Number(record.rank) || 1;
+  const totalPlayers = Number(record.totalPlayers) || 1;
+  const details = record.details || record.answersDetail || [];
 
   return await pg.withTransaction(async (client) => {
     const uRes = await client.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [user]);
@@ -727,26 +812,32 @@ async function saveAttempt(record) {
       ? record.accountUserId : (uRes.rows[0]?.id || null);
 
     await client.query(
-      `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, quiz_id, game_session_id, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, quiz_id, game_session_id, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at, finished_at, rank, total_players, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (id) DO UPDATE SET 
          score = EXCLUDED.score, 
          max_score = EXCLUDED.max_score,
          correct_count = EXCLUDED.correct_count,
          total_questions = EXCLUDED.total_questions,
          ratio_pct = EXCLUDED.ratio_pct,
-         formatted_time = EXCLUDED.formatted_time`,
+         formatted_time = EXCLUDED.formatted_time,
+         finished_at = EXCLUDED.finished_at,
+         rank = EXCLUDED.rank,
+         total_players = EXCLUDED.total_players,
+         details = EXCLUDED.details`,
       [
         attemptId, user, accountUserId, user,
         record.quizId || null, record.gameSessionId || null,
         record.pin || '', record.roomTitle || '', record.examTitle || record.roomTitle || '',
         record.score || 0, record.maxScore || ((record.totalQuestions || 0) * 100),
         record.correctCount || 0, record.totalQuestions || 0, record.ratioPct || 0,
-        record.formattedTime || new Date(now).toLocaleString('vi-VN'), now
+        record.formattedTime || new Date(now).toLocaleString('vi-VN'), now,
+        finishedAt, rank, totalPlayers,
+        JSON.stringify(details)
       ]
     );
 
-    const answers = record.answersDetail || record.details || [];
+    const answers = details;
     for (let i = 0; i < answers.length; i++) {
       const ans = answers[i];
       const qIdx = ans.questionIndex !== undefined ? ans.questionIndex : i;
@@ -775,7 +866,7 @@ async function saveAttempt(record) {
         ]
       );
     }
-    return { id: attemptId, ...record };
+    return { id: attemptId, ...record, rank, totalPlayers, finishedAt, details };
   });
 }
 

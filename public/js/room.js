@@ -18,6 +18,7 @@ const NICKNAME = params.get('nick') || 'Bạn';
 const AVATAR   = params.get('av')   || '01';
 let localPractice = false;
 let EXAM_TITLE = 'Đề thi Toán & Logic';
+let EXAM_ID = params.get('examId') || '';
 
 // Load custom room questions if available
 try {
@@ -28,6 +29,9 @@ try {
     localPractice = roomPin.startsWith('TEST-') && customRooms[roomPin].isTest === true;
     if (customRooms[roomPin].title) {
       EXAM_TITLE = customRooms[roomPin].title;
+    }
+    if (customRooms[roomPin].id || customRooms[roomPin].examId) {
+      EXAM_ID = customRooms[roomPin].id || customRooms[roomPin].examId;
     }
     if (customRooms[roomPin].timePerQ) {
       TIMER_SECS = customRooms[roomPin].timePerQ;
@@ -142,6 +146,9 @@ async function syncRoomFromServer() {
         if (data.room.title || data.room.name) {
           EXAM_TITLE = data.room.name || data.room.title;
         }
+        if (data.room.examId || data.room.quizId) {
+          EXAM_ID = data.room.examId || data.room.quizId;
+        }
         const me = (data.room.players || []).find(player => player.id === myPlayerId);
         if (me) totalScore = Number(me.score) || 0;
         currentQ = Number(data.room.currentQ) || 0;
@@ -154,9 +161,9 @@ async function syncRoomFromServer() {
         }
       }
     }
-    if (!myPlayerToken && PIN && PIN !== '---') {
+    if (PIN && PIN !== '---') {
       try {
-        const existingToken = sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
+        const existingToken = myPlayerToken || sessionStorage.getItem('mqc_my_player_token_' + PIN) || '';
         const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -167,6 +174,10 @@ async function syncRoomFromServer() {
           if (jData.player && jData.player.playerToken) {
             myPlayerToken = jData.player.playerToken;
             sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
+          }
+          if (jData.player && jData.player.id) {
+            myPlayerId = jData.player.id;
+            sessionStorage.setItem('mqc_my_player_id_' + PIN, myPlayerId);
           }
         }
       } catch (e) {}
@@ -440,29 +451,58 @@ function selectAnswer(choiceIdx) {
 
   // Gửi lựa chọn đáp án thời gian thực lên máy chủ để chủ phòng theo dõi và xác thực điểm
   if (PIN && PIN !== '---') {
-    fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-token': myPlayerToken
-      },
-      body: JSON.stringify({
-        id: myPlayerId,
-        playerId: myPlayerId,
-        playerToken: myPlayerToken,
-        nick: NICKNAME,
-        qIdx: currentQ,
-        choice: choiceIdx,
-        responseTimeMs: Math.round(ticksElapsed * 25)
-      })
-    })
-    .then(r => r.json())
-    .then(res => {
-      if (res && res.success && currentQ === submittedQ) {
-        document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
-      }
-    })
-    .catch(() => {});
+    const payload = {
+      id: myPlayerId,
+      playerId: myPlayerId,
+      playerToken: myPlayerToken,
+      nick: NICKNAME,
+      qIdx: currentQ,
+      choice: choiceIdx,
+      responseTimeMs: Math.round(ticksElapsed * 25)
+    };
+
+    const sendAnswer = async (p) => {
+      try {
+        const r = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-player-token': p.playerToken || myPlayerToken
+          },
+          body: JSON.stringify(p)
+        });
+        const res = await r.json();
+        if (res && res.success && currentQ === submittedQ) {
+          document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
+        } else if (res && (res.unauthorized || res.rejected)) {
+          // Tự động kết nối lại nếu token cần cập nhật
+          const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR, playerToken: myPlayerToken })
+          });
+          if (jRes.ok) {
+            const jData = await jRes.json();
+            if (jData.player?.playerToken) {
+              myPlayerToken = jData.player.playerToken;
+              sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
+              p.playerToken = myPlayerToken;
+              const retryR = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-player-token': myPlayerToken },
+                body: JSON.stringify(p)
+              });
+              const retryRes = await retryR.json();
+              if (retryRes && retryRes.success && currentQ === submittedQ) {
+                document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    };
+
+    sendAnswer(payload);
   }
 
   /* Timer vẫn tiếp tục chạy — người chơi phải đợi hết giờ */
@@ -818,6 +858,8 @@ async function saveHistoryRecord(sorted, yourRank) {
 
   const payload = {
     pin: PIN,
+    quizId: (typeof EXAM_ID !== 'undefined' && EXAM_ID) ? EXAM_ID : (params.get('examId') || ''),
+    examId: (typeof EXAM_ID !== 'undefined' && EXAM_ID) ? EXAM_ID : (params.get('examId') || ''),
     playerId: myPlayerId,
     playerToken: myPlayerToken,
     roomTitle: EXAM_TITLE,

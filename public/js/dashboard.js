@@ -284,11 +284,26 @@
 
     const rankIcons = ['🥇', '🥈', '🥉'];
     listEl.innerHTML = list.map((item, idx) => {
-      const rankIcon = rankIcons[item.rank - 1] || ('#' + item.rank);
-      const titleStr = item.roomTitle || ('Đề thi PIN: ' + item.pin);
-      const timeStr = new Date(item.finishedAt).toLocaleDateString('vi-VN', {
-        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
-      });
+      const rankNum = Number(item.rank) || 1;
+      const rankIcon = rankIcons[rankNum - 1] || ('#' + rankNum);
+      const titleStr = item.roomTitle || item.examTitle || ('Đề thi PIN: ' + item.pin);
+      
+      let timeStr = item.formattedTime || '';
+      if (!timeStr && (item.finishedAt || item.createdAt)) {
+        try {
+          const d = new Date(Number(item.finishedAt || item.createdAt));
+          if (!isNaN(d.getTime())) {
+            timeStr = d.toLocaleDateString('vi-VN', {
+              day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+          }
+        } catch(e) {}
+      }
+      if (!timeStr) timeStr = 'Gần đây';
+
+      const correctCount = item.correctCount !== undefined ? item.correctCount : 0;
+      const totalQuestions = item.totalQuestions !== undefined ? item.totalQuestions : 0;
+
       return `
         <div class="history-item" onclick="openHistoryDetails(${idx})" title="Bấm để xem chi tiết bài làm: ${escapeHtml(titleStr)}">
           <div class="history-item-top">
@@ -297,7 +312,7 @@
           </div>
           <div class="history-item-bottom">
             <span>${timeStr}</span>
-            <span class="history-score">${item.score}đ (${item.correctCount}/${item.totalQuestions})</span>
+            <span class="history-score">${item.score}đ (${correctCount}/${totalQuestions})</span>
           </div>
         </div>
       `;
@@ -308,49 +323,66 @@
     const item = userHistoryData[idx];
     if (!item) return;
 
-    const titleStr = item.roomTitle || ('Đề thi PIN: ' + item.pin);
+    const titleStr = item.roomTitle || item.examTitle || ('Đề thi PIN: ' + item.pin);
+    const maxScore = item.maxScore || (item.totalQuestions * 100) || item.score || 100;
+    const accuracyPct = item.accuracyPct !== undefined ? item.accuracyPct : (item.ratioPct !== undefined ? item.ratioPct : (item.totalQuestions > 0 ? Math.round((item.correctCount / item.totalQuestions) * 100) : 0));
+    const rank = item.rank || 1;
+    const totalPlayers = item.totalPlayers || 1;
+
     document.getElementById('hist-modal-title').textContent = `Chi tiết bài làm: ${titleStr}`;
     document.getElementById('hist-modal-meta').innerHTML = `
-      <span>Điểm: <strong>${item.score}/${item.maxScore}</strong></span> • 
-      <span>Đúng: <strong>${item.correctCount}/${item.totalQuestions}</strong> câu (${item.accuracyPct}%)</span> • 
-      <span>Xếp hạng: <strong>#${item.rank}/${item.totalPlayers}</strong></span>
+      <span>Điểm: <strong>${item.score}/${maxScore}</strong></span> • 
+      <span>Đúng: <strong>${item.correctCount}/${item.totalQuestions}</strong> câu (${accuracyPct}%)</span> • 
+      <span>Xếp hạng: <strong>#${rank}/${totalPlayers}</strong></span>
     `;
 
     const letters = ['A', 'B', 'C', 'D'];
     const detailsContainer = document.getElementById('hist-details-list');
-    if (!item.details || item.details.length === 0) {
+    const details = item.details || item.answersDetail || [];
+
+    if (!details || details.length === 0) {
       detailsContainer.innerHTML = '<div class="history-empty">Bài làm này không có dữ liệu câu hỏi chi tiết.</div>';
     } else {
-      detailsContainer.innerHTML = item.details.map((q, qIdx) => {
+      detailsContainer.innerHTML = details.map((q, qIdx) => {
         const isCorrect = !!q.isCorrect;
+        const earned = Math.round(q.earned || q.scoreAwarded || 0);
         const badge = isCorrect 
-          ? `<span class="detail-badge badge-corr">✓ Đúng (+${q.earned}đ)</span>`
+          ? `<span class="detail-badge badge-corr">✓ Đúng (+${earned}đ)</span>`
           : (q.userChoice === -1 
               ? `<span class="detail-badge badge-wrg">⏰ Hết giờ (0đ)</span>`
               : `<span class="detail-badge badge-wrg">✗ Sai (0đ)</span>`);
 
-        const choicesHtml = (q.choices || []).map((c, cIdx) => {
-          const isUserPick = q.userChoice === cIdx;
-          const isCorrChoice = q.correctChoice === cIdx;
-          let pickClass = '';
-          if (isUserPick && isCorrChoice) pickClass = 'user-pick is-correct';
-          else if (isUserPick) pickClass = 'user-pick';
-          else if (isCorrChoice) pickClass = 'is-correct';
+        const qTitle = q.questionText || q.text || `Câu ${qIdx + 1}`;
+        const choices = Array.isArray(q.choices) ? q.choices : [];
 
-          let icon = '';
-          if (isUserPick && isCorrChoice) icon = ' (Lựa chọn của bạn ✓)';
-          else if (isUserPick) icon = ' (Lựa chọn của bạn ✗)';
-          else if (isCorrChoice) icon = ' (Đáp án đúng ✓)';
+        let choicesHtml = '';
+        if (choices.length > 0) {
+          choicesHtml = choices.map((c, cIdx) => {
+            const isUserPick = q.userChoice === cIdx;
+            const isCorrChoice = q.correctChoice === cIdx;
+            let pickClass = '';
+            if (isUserPick && isCorrChoice) pickClass = 'user-pick is-correct';
+            else if (isUserPick) pickClass = 'user-pick';
+            else if (isCorrChoice) pickClass = 'is-correct';
 
-          return `<div class="detail-choice-row ${pickClass}">
-            <strong>${letters[cIdx] || (cIdx+1)}.</strong> ${escapeHtml(c)} <span style="font-size:0.75rem; margin-left:auto;">${icon}</span>
-          </div>`;
-        }).join('');
+            let icon = '';
+            if (isUserPick && isCorrChoice) icon = ' (Lựa chọn của bạn ✓)';
+            else if (isUserPick) icon = ' (Lựa chọn của bạn ✗)';
+            else if (isCorrChoice) icon = ' (Đáp án đúng ✓)';
+
+            return `<div class="detail-choice-row ${pickClass}">
+              <strong>${letters[cIdx] || (cIdx+1)}.</strong> ${escapeHtml(c)} <span style="font-size:0.75rem; margin-left:auto;">${icon}</span>
+            </div>`;
+          }).join('');
+        } else {
+          const userChoiceText = q.userChoice >= 0 ? `Lựa chọn của bạn: Đáp án ${letters[q.userChoice] || (q.userChoice + 1)}` : 'Không trả lời (Hết giờ)';
+          choicesHtml = `<div class="detail-choice-row ${isCorrect ? 'is-correct' : 'user-pick'}">${userChoiceText}</div>`;
+        }
 
         return `
           <div class="detail-q-card ${isCorrect ? 'q-correct' : 'q-wrong'}">
             <div class="detail-q-header">
-              <span class="detail-q-title"><strong>Câu ${qIdx + 1}:</strong> ${escapeHtml(q.questionText)}</span>
+              <span class="detail-q-title"><strong>Câu ${qIdx + 1}:</strong> ${escapeHtml(qTitle)}</span>
               ${badge}
             </div>
             <div class="detail-choices">

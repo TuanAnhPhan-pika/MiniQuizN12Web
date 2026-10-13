@@ -46,6 +46,11 @@
     window.location.href = 'create-room.html';
   }
 
+  // Xóa sạch trạng thái cũ nếu còn sót từ phiên trước để tránh tự động bắt đầu
+  try {
+    localStorage.removeItem(`mqc_room_status_${PIN}`);
+  } catch (e) {}
+
   document.getElementById('pin-display').textContent = PIN;
 
   let currentRoom = null;
@@ -66,9 +71,16 @@
       .replace(/>/g, '&gt;');
   }
 
+  function getBaseJoinUrl() {
+    if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.__SERVER_LAN_URL__) {
+      return window.__SERVER_LAN_URL__;
+    }
+    return window.location.origin;
+  }
+
   /* ── SAO CHÉP ĐƯỜNG DẪN THAM GIA PHÒNG THI ── */
   function copyPinCode() {
-    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    const baseUrl = getBaseJoinUrl();
     const joinUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(PIN)}`;
 
     const copyText = (text) => {
@@ -134,8 +146,8 @@
     const qrBox = document.getElementById('qr-box');
     qrBox.innerHTML = '';
 
-    // Mã QR trỏ đến domain hiện tại (Cloud Run / AI Studio / Local) kèm mã PIN nhập sẵn
-    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    // Mã QR trỏ đến đúng domain mà máy chủ của chủ phòng đang chạy
+    const baseUrl = getBaseJoinUrl();
     const joinUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(PIN)}`;
 
     try {
@@ -252,7 +264,14 @@
     // 1. Đọc từ local cache nếu có (kiểm tra cả mqc_custom_rooms và mqc_created_rooms)
     try {
       const customRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
-      const createdRooms = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      let createdRooms = [];
+      try {
+        const u = (window.MQC_Auth && window.MQC_Auth.getUsername) ? window.MQC_Auth.getUsername() : '';
+        const userCreatedRoomsKey = window.getUserStorageKey ? window.getUserStorageKey('mqc_created_rooms', u) : '';
+        createdRooms = JSON.parse(localStorage.getItem(userCreatedRoomsKey) || localStorage.getItem('mqc_created_rooms') || '[]');
+      } catch (e) {
+        createdRooms = JSON.parse(localStorage.getItem('mqc_created_rooms') || '[]');
+      }
       const foundCreated = createdRooms.find(r => r.pin === PIN);
       currentRoom = customRooms[PIN] || foundCreated || null;
       if (currentRoom) {
@@ -291,12 +310,14 @@
   /* ── POLLING ĐỒNG BỘ THỜI GIAN THỰC (1000ms) ── */
   function startRealtimePolling() {
     if (pollInterval) clearInterval(pollInterval);
+    let consecutive404 = 0;
 
     pollInterval = setInterval(async () => {
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/status`);
         if (res.status === 404) {
-          if (currentRoom) {
+          consecutive404++;
+          if (currentRoom && consecutive404 <= 3) {
             await fetch('/api/rooms', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -304,12 +325,14 @@
             });
             return;
           }
+          if (consecutive404 < 3) return;
           // Phòng đã bị xóa
           clearInterval(pollInterval);
           alert('Phòng thi này đã bị xóa hoặc hết hạn!');
           window.location.href = 'create-room.html';
           return;
         }
+        consecutive404 = 0;
 
         if (res.ok) {
           const data = await res.json();
@@ -367,7 +390,7 @@
       await fetch(`/api/rooms/${encodeURIComponent(PIN)}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ countdown: 5 })
+        body: JSON.stringify({ countdown: 5, countdownSec: 5 })
       });
     } catch (err) {
       console.warn('Lỗi gọi API /start:', err);

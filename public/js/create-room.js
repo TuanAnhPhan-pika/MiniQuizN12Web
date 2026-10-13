@@ -473,6 +473,10 @@
     if (!rooms || rooms.length === 0) return;
     let hasChanges = false;
     for (const r of rooms) {
+      // Bỏ qua kiểm tra huỷ đối với phòng mới tạo trong 30 giây để tránh race condition
+      if (r.createdAt && (Date.now() - r.createdAt < 30000)) {
+        continue;
+      }
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(r.pin)}`);
         if (res.status === 404) {
@@ -564,8 +568,11 @@
     qrArea.className = 'qr-placeholder-area has-qr';
     qrArea.innerHTML = '';
 
-    // Mã QR trỏ đến domain hiện tại (Cloud Run / AI Studio / Local) kèm mã PIN nhập sẵn
-    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    // Mã QR trỏ đến domain máy chủ hiện tại kèm mã PIN nhập sẵn
+    let baseUrl = window.location.origin;
+    if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.__SERVER_LAN_URL__) {
+      baseUrl = window.__SERVER_LAN_URL__;
+    }
     const targetUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(pin.trim())}`;
 
     try {
@@ -757,9 +764,6 @@
 
     const nameInput = document.getElementById('room-name');
     const capacityInput = document.getElementById('room-capacity');
-
-    const roomName = nameInput.value.trim() || ('Phòng thi ' + chosenExam.title);
-    const capacity = parseInt(capacityInput.value) || 40;
     const examId = document.getElementById('selected-exam-id')?.value || selectedExamId;
 
     const chosenExam = userExams.find(e => e.id === examId) || userExams[0];
@@ -768,39 +772,57 @@
       return;
     }
 
+    const roomName = nameInput.value.trim() || ('Phòng thi ' + (chosenExam.title || ''));
+    const capacity = parseInt(capacityInput.value) || 40;
+
     // Xóa đề thi đã gán tạm khỏi sessionStorage sau khi tạo phòng thành công
     sessionStorage.removeItem('mqc_assigned_exam');
 
-    // Sinh mã PIN tự nhiên
-    const pin = generateNaturalPin();
     const now = Date.now();
 
-    const roomData = {
-      pin,
+    const roomPayload = {
       name: roomName,
       capacity,
       examId: chosenExam.id,
       title: chosenExam.title,
       questions: chosenExam.questions || [],
-      timePerQ: chosenExam.timePerQ || 15,
-      createdAt: now
+      timePerQ: chosenExam.timePerQ || 15
     };
 
-    // 1. Lưu vào server qua POST /api/rooms
+    // 1. Gửi request tạo phòng lên Server:
+    // Server là nơi duy nhất sinh mã PIN, kiểm tra trùng lặp và phân xử phòng thi cho tất cả người chơi
+    let serverPin = null;
+    let roomData = null;
     try {
-      await fetch('/api/rooms', {
+      const resp = await fetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(roomData)
+        body: JSON.stringify(roomPayload)
       });
+      const data = await resp.json();
+      if (!resp.ok || !data.success || !data.pin) {
+        alert(data.message || 'Lỗi khi tạo phòng thi trên máy chủ!');
+        return;
+      }
+      serverPin = data.pin;
+      roomData = {
+        ...roomPayload,
+        pin: serverPin,
+        createdAt: now
+      };
     } catch (err) {
-      console.warn('Lỗi đồng bộ phòng lên server:', err);
+      console.error('Lỗi khi tạo phòng trên server:', err);
+      alert('Không thể kết nối đến máy chủ để tạo phòng!');
+      return;
     }
 
-    // 2. Lưu vào custom rooms của client để index/room nhận diện
+    // 2. Dọn dẹp cờ trạng thái cũ và lưu vào custom rooms của client
     try {
+      localStorage.removeItem(`mqc_room_status_${serverPin}`);
+      localStorage.removeItem(`mqc_waiting_players_${serverPin}`);
+      sessionStorage.removeItem(`mqc_room_status_${serverPin}`);
       const activeRooms = JSON.parse(localStorage.getItem('mqc_custom_rooms') || '{}');
-      activeRooms[pin] = roomData;
+      activeRooms[serverPin] = roomData;
       localStorage.setItem('mqc_custom_rooms', JSON.stringify(activeRooms));
     } catch (e) {}
 
@@ -811,7 +833,7 @@
     } catch (e) {}
 
     rawRooms.unshift({
-      pin,
+      pin: serverPin,
       name: roomName,
       capacity,
       title: chosenExam.title,
@@ -822,11 +844,11 @@
 
     // 4. Cập nhật danh sách & chọn cố định phòng mới tạo (hiển thị ngay mã PIN và QR)
     loadCreatedRooms();
-    handleRoomClick(pin);
+    handleRoomClick(serverPin);
 
     // Reset input tên phòng
     nameInput.value = '';
-    showRoomToast('🎉 Đã tạo phòng thi "' + roomName + '" thành công! Mã PIN: ' + pin);
+    showRoomToast('🎉 Đã tạo phòng thi "' + roomName + '" thành công! Mã PIN: ' + serverPin);
   }
 
   /* ── Toast thông báo ── */
@@ -864,7 +886,10 @@
     const cleanPin = (rawPin || '').trim();
     if (!cleanPin || cleanPin === 'XXX-XXX') return;
 
-    const baseUrl = window.__SERVER_PUBLIC_URL__ || window.location.origin;
+    let baseUrl = window.location.origin;
+    if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.__SERVER_LAN_URL__) {
+      baseUrl = window.__SERVER_LAN_URL__;
+    }
     const joinUrl = `${baseUrl}/index.html?pin=${encodeURIComponent(cleanPin)}`;
 
     const copyText = (text) => {

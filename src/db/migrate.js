@@ -306,3 +306,13 @@ async function migrateGameSessions() {
 module.exports = {
   runMigration,
 };
+
+if (require.main === module) {
+  runMigration().then(() => {
+    console.log('Migration finished.');
+    process.exit(0);
+  }).catch((err) => {
+    console.error('Migration failed:', err);
+    process.exit(1);
+  });
+}

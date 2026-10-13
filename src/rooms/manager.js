@@ -8,10 +8,36 @@ const db = require('../db/index.js');
 const ROOM_EXPIRE_MS = 4 * 60 * 60 * 1000; // 4 giờ
 const activeRooms = new Map(); // pin -> room object
 
+function isUnnaturalTriplet(numStr) {
+  if (numStr[0] === numStr[1] && numStr[1] === numStr[2]) return true; // Tránh 111, 222...
+  const d1 = Number(numStr[0]);
+  const d2 = Number(numStr[1]);
+  const d3 = Number(numStr[2]);
+  if (d2 === d1 + 1 && d3 === d2 + 1) return true; // Tránh 123, 234...
+  if (d2 === d1 - 1 && d3 === d2 - 1) return true; // Tránh 321, 432...
+  return false;
+}
+
+function generateTriplet() {
+  for (let i = 0; i < 50; i++) {
+    const val = Math.floor(124 + Math.random() * 860);
+    const s = String(val);
+    if (!isUnnaturalTriplet(s)) return s;
+  }
+  return String(Math.floor(100 + Math.random() * 900));
+}
+
 function generatePin() {
-  const p1 = Math.floor(100 + Math.random() * 900);
-  const p2 = Math.floor(100 + Math.random() * 900);
-  return `${p1}-${p2}`;
+  for (let attempts = 0; attempts < 100; attempts++) {
+    const part1 = generateTriplet();
+    const part2 = generateTriplet();
+    if (part1 === part2) continue;
+    const candidate = `${part1}-${part2}`;
+    if (!activeRooms.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${Math.floor(100 + Math.random() * 900)}-${Math.floor(100 + Math.random() * 900)}`;
 }
 
 function cleanupExpiredRooms() {
@@ -26,13 +52,27 @@ function cleanupExpiredRooms() {
 // Chạy dọn dẹp phòng hết hạn mỗi 10 phút
 setInterval(cleanupExpiredRooms, 10 * 60 * 1000);
 
-async function createRoom({ hostUsername, exam, capacity = 40, isLocked = false, title = '' }) {
+async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40, isLocked = false, title = '' }) {
   cleanupExpiredRooms();
-  let pin = generatePin();
-  let attempts = 0;
-  while (activeRooms.has(pin) && attempts < 10) {
+  let pin = '';
+  // Nếu host gửi mã PIN cũ (ví dụ khi reload trang hoặc khôi phục phòng của chính mình)
+  if (requestedPin && /^\d{3}-\d{3}$/.test(String(requestedPin).trim())) {
+    const cleanReqPin = String(requestedPin).trim();
+    const existing = activeRooms.get(cleanReqPin);
+    if (!existing || existing.hostUsername === String(hostUsername || 'admin').toLowerCase()) {
+      pin = cleanReqPin;
+      if (existing) activeRooms.delete(cleanReqPin);
+    }
+  }
+
+  // Mặc định: Server sinh mã PIN ngẫu nhiên tự nhiên và kiểm tra không trùng lặp 100%
+  if (!pin) {
     pin = generatePin();
-    attempts++;
+    let attempts = 0;
+    while (activeRooms.has(pin) && attempts < 100) {
+      pin = generatePin();
+      attempts++;
+    }
   }
 
   const now = Date.now();
@@ -196,8 +236,11 @@ function getRoomForClient(pin, isHost = false) {
 }
 
 function verifyPlayer(room, playerId, playerToken) {
-  if (!room || !playerId || !playerToken) return null;
-  const player = (room.players || []).find(p => p.id === playerId);
+  if (!room || !playerToken) return null;
+  let player = (room.players || []).find(p => p.id === playerId);
+  if (!player && typeof playerToken === 'string') {
+    player = (room.players || []).find(p => p.playerToken && safeCompareTokens(p.playerToken, playerToken));
+  }
   if (!player || !player.playerToken) return null;
   if (!safeCompareTokens(player.playerToken, playerToken)) {
     return null;
@@ -209,22 +252,15 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
   const room = getRawRoom(pin);
   if (!room) return { success: false, message: 'Phòng thi không tồn tại' };
 
-  if (room.isLocked && !isHost) {
-    return { success: false, locked: true, message: 'Phòng thi đang bị khóa' };
-  }
-
-  const candidates = (room.players || []).filter(p => !p.isHost);
-  if (!isHost && candidates.length >= room.capacity) {
-    return { success: false, full: true, message: 'Phòng đã đạt giới hạn người tham gia' };
-  }
-
   const now = Date.now();
   const nickClean = (nick || 'Thí sinh').trim().slice(0, 25);
   const nickLower = nickClean.toLowerCase();
 
-  const existingByNick = room.players.find(p => !p.isHost && p.nick.toLowerCase() === nickLower);
+  // 1. Reconnect case: Kiểm tra xem thí sinh đã có trong phòng chưa
   const existingById = id ? room.players.find(p => !p.isHost && p.id === id) : null;
-  const existing = existingById || existingByNick;
+  const existingByToken = playerToken ? room.players.find(p => !p.isHost && p.playerToken && safeCompareTokens(p.playerToken, playerToken)) : null;
+  const existingByNick = room.players.find(p => !p.isHost && p.nick.toLowerCase() === nickLower);
+  const existing = existingById || existingByToken || existingByNick;
 
   if (existing) {
     // Reconnect case: bắt buộc phải có playerToken và khớp token cũ
@@ -249,6 +285,16 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
       },
       room: getRoomForClient(pin, isHost)
     };
+  }
+
+  // 2. Thí sinh mới: Kiểm tra xem phòng có bị khóa hoặc đầy không
+  if (room.isLocked && !isHost) {
+    return { success: false, locked: true, message: 'Phòng thi đang bị khóa' };
+  }
+
+  const candidates = (room.players || []).filter(p => !p.isHost);
+  if (!isHost && candidates.length >= room.capacity) {
+    return { success: false, full: true, message: 'Phòng đã đạt giới hạn người tham gia' };
   }
 
   // Thí sinh mới: sinh playerToken ngẫu nhiên
@@ -293,6 +339,10 @@ function removePlayer(pin, { id, playerToken, isHost = false }) {
     const verified = verifyPlayer(room, id, playerToken);
     if (!verified) {
       return { success: false, message: 'Không có quyền thao tác' };
+    }
+    // Khi đang trong giai đoạn đếm ngược hoặc đang diễn ra bài thi, không xóa thí sinh khỏi danh sách làm bài
+    if (room.status === 'countdown' || room.status === 'started') {
+      return { success: true, preserved: true };
     }
   }
 
@@ -365,7 +415,13 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     return { success: false, unauthorized: true, message: 'Thí sinh không hợp lệ hoặc token không đúng!' };
   }
 
-  // 2. Kiểm tra trạng thái phòng thi và câu hỏi
+  // 2. Tự động chuyển countdown hoặc waiting sang started khi có thí sinh nộp câu hỏi
+  if (room.status === 'countdown' || (room.status === 'waiting' && Number(qIdx) === 0)) {
+    room.status = 'started';
+    if (!room.phaseStartedAt) room.phaseStartedAt = Date.now();
+  }
+
+  // Kiểm tra trạng thái phòng thi và câu hỏi
   if (room.status !== 'started') {
     return { success: false, rejected: true, message: 'Phòng thi chưa bắt đầu hoặc đã kết thúc!' };
   }

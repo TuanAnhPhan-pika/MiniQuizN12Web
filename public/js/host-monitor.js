@@ -113,8 +113,13 @@
       }
     } catch(err) {}
 
-    // Cập nhật tiêu đề phòng
+    // Cập nhật tiêu đề phòng và số lượng thí sinh ban đầu
     document.getElementById('room-title').textContent = EXAM_TITLE;
+    const initialCandidates = (currentRoom && currentRoom.players) ? currentRoom.players.filter(p => !p.isHost).length : 0;
+    const badgeEl = document.getElementById('live-responder-badge');
+    if (badgeEl && initialCandidates > 0) {
+      badgeEl.textContent = `👥 Đã trả lời: 0 / ${initialCandidates} thí sinh`;
+    }
 
     if (!QUESTIONS || QUESTIONS.length === 0) {
       alert('Không tìm thấy câu hỏi trong phòng thi!');
