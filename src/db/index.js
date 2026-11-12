@@ -874,6 +874,27 @@ async function saveAttempt(record) {
 // 4. MULTIPLAYER: GAME SESSIONS & PLAYERS
 // ═══════════════════════════════════════════════════════════════════════════
 
+async function createWaitingGameSession(room) {
+  const now = room.createdAt || Date.now();
+  const host = String(room.hostUsername || 'host').toLowerCase();
+  await pg.query(
+    `INSERT INTO game_sessions (id, quiz_id, host_id, room_code, room_title, status, capacity, is_locked, total_players, formatted_time, created_at)
+     VALUES ($1, (SELECT id FROM quizzes WHERE id = $2::varchar LIMIT 1), $3::varchar, $4, $5, 'waiting', $6, $7, 0, $8, $9)
+     ON CONFLICT (id) DO UPDATE SET room_title = EXCLUDED.room_title, capacity = EXCLUDED.capacity, is_locked = EXCLUDED.is_locked`,
+    [
+      room.sessionId,
+      String(room.examId || ''),
+      host,
+      room.pin || '',
+      room.title || 'Phòng thi trực tuyến',
+      Number(room.capacity) || 40,
+      !!room.isLocked,
+      new Date(now).toLocaleString('vi-VN'),
+      now,
+    ]
+  );
+}
+
 async function saveHostedGameSession(hostUsername, sessionRecord) {
   const sessionId = sessionRecord.id || `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const now = sessionRecord.finishedAt || Date.now();
@@ -885,7 +906,7 @@ async function saveHostedGameSession(hostUsername, sessionRecord) {
     await client.query(
       `INSERT INTO game_sessions (id, host_id, room_code, room_title, status, capacity, total_players, started_at, ended_at, formatted_time, stats, created_at)
        VALUES ($1, $2, $3, $4, 'finished', $5, $6, $7, $8, $9, $10, $11)
-       ON CONFLICT (id) DO UPDATE SET ended_at = EXCLUDED.ended_at, stats = EXCLUDED.stats`,
+       ON CONFLICT (id) DO UPDATE SET status = 'finished', total_players = EXCLUDED.total_players, ended_at = EXCLUDED.ended_at, formatted_time = EXCLUDED.formatted_time, stats = EXCLUDED.stats`,
       [sessionId, host, sessionRecord.pin || '', sessionRecord.roomTitle || 'Phòng thi trực tuyến', sessionRecord.capacity || 40, candidates.length, sessionRecord.createdAt || (now - 60000), now, sessionRecord.formattedTime || new Date(now).toLocaleString('vi-VN'), JSON.stringify(stats), sessionRecord.createdAt || now]
     );
     for (let i = 0; i < candidates.length; i++) {
@@ -1021,6 +1042,7 @@ module.exports = {
   deleteQuiz,
   getUserAttempts,
   saveAttempt,
+  createWaitingGameSession,
   saveHostedGameSession,
   getHostedGameSessions,
 };

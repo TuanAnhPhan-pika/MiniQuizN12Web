@@ -1148,7 +1148,31 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const body = await readJsonBody(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu yêu cầu không hợp lệ!' });
+        return;
+      }
       const hostUsername = sessionUser.username;
+
+      const rawRoomName = Object.hasOwn(body, 'name') ? body.name : body.title;
+      const roomTitle = typeof rawRoomName === 'string' ? rawRoomName.trim() : '';
+      if (!roomTitle) {
+        sendJSON(res, 400, { success: false, message: 'Tên phòng thi không được để trống!' });
+        return;
+      }
+
+      const cleanReqPin = body.pin && /^\d{3}-\d{3}$/.test(String(body.pin).trim())
+        ? String(body.pin).trim()
+        : '';
+      const existingReqRoom = cleanReqPin ? roomsManager.getRawRoom(cleanReqPin) : null;
+      const isUpdatingOwnRoom = existingReqRoom && existingReqRoom.hostUsername === String(hostUsername || 'admin').toLowerCase();
+      if (!isUpdatingOwnRoom && typeof roomsManager.countActiveRoomsByHost === 'function') {
+        const limit = roomsManager.MAX_ROOMS_PER_HOST || 3;
+        if (roomsManager.countActiveRoomsByHost(hostUsername) >= limit) {
+          sendJSON(res, 409, { success: false, message: 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn' });
+          return;
+        }
+      }
 
       let exam = body.exam || {};
       if (!exam.questions && body.questions && Array.isArray(body.questions)) {
@@ -1181,7 +1205,7 @@ const server = http.createServer(async (req, res) => {
         exam,
         capacity: Number(body.capacity) || 40,
         isLocked: !!body.isLocked,
-        title: body.title || body.name || exam.title || 'Phòng thi trực tuyến'
+        title: roomTitle
       });
 
       sendJSON(res, 200, { success: true, room: roomsManager.getRoomForClient(room.pin, true), pin: room.pin });

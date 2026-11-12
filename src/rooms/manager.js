@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const db = require('../db/index.js');
 
 const ROOM_EXPIRE_MS = 4 * 60 * 60 * 1000; // 4 giờ
+const MAX_ROOMS_PER_HOST = 3;
 const activeRooms = new Map(); // pin -> room object
 
 function isUnnaturalTriplet(numStr) {
@@ -115,6 +116,9 @@ async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40
     answers: {}, // qIdx -> { [playerId]: record }
   };
 
+  if (db && typeof db.createWaitingGameSession === 'function') {
+    await db.createWaitingGameSession(room);
+  }
   activeRooms.set(pin, room);
   return room;
 }
@@ -683,10 +687,24 @@ function deleteRoom(pin) {
   return activeRooms.delete(pin);
 }
 
+function countActiveRoomsByHost(hostUsername) {
+  cleanupExpiredRooms();
+  const target = String(hostUsername || 'admin').toLowerCase();
+  let count = 0;
+  for (const room of activeRooms.values()) {
+    if (room.hostUsername === target && room.status !== 'finished' && room.status !== 'cancelled') {
+      count++;
+    }
+  }
+  return count;
+}
+
 module.exports = {
+  MAX_ROOMS_PER_HOST,
   createRoom,
   getRawRoom,
   getRoomForClient,
+  countActiveRoomsByHost,
   sanitizePlayer,
   verifyPlayer,
   addPlayer,

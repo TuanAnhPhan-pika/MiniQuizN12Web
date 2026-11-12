@@ -772,7 +772,12 @@
       return;
     }
 
-    const roomName = nameInput.value.trim() || ('Phòng thi ' + (chosenExam.title || ''));
+    const roomName = nameInput.value.trim();
+    if (!roomName) {
+      showWarningModal('Tên phòng thi không được để trống!', 'Thiếu thông tin');
+      nameInput.focus();
+      return;
+    }
     const capacity = parseInt(capacityInput.value) || 40;
 
     // Xóa đề thi đã gán tạm khỏi sessionStorage sau khi tạo phòng thành công
@@ -801,7 +806,7 @@
       });
       const data = await resp.json();
       if (!resp.ok || !data.success || !data.pin) {
-        alert(data.message || 'Lỗi khi tạo phòng thi trên máy chủ!');
+        showWarningModal(data.message || 'Lỗi khi tạo phòng thi trên máy chủ!', 'Lỗi tạo phòng');
         return;
       }
       serverPin = data.pin;
@@ -870,7 +875,9 @@
   }
 
   /* ── Modal cảnh báo ── */
-  function showWarningModal(msg) {
+  function showWarningModal(msg, title = 'Giới hạn đặt chỗ') {
+    const titleEl = document.getElementById('warning-modal-title');
+    if (titleEl) titleEl.textContent = title;
     document.getElementById('warning-modal-msg').textContent = msg || 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn';
     document.getElementById('warning-modal').classList.add('show');
   }

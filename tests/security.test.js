@@ -234,6 +234,21 @@ test('delayed answer reveal, phase gates, host auth and Origin rejection over HT
   }
   assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question', isHost: true })).status, 401);
   const hostHeaders = { Authorization: 'Bearer host' };
+  for (const badBody of [{}, { name: '   ' }, { name: '', title: 'Quiz' }, { title: '   ' }]) {
+    const res = await post('/api/rooms', badBody, { ...hostHeaders, Origin: 'http://localhost:3000' });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).message, 'Tên phòng thi không được để trống!');
+  }
+  const okRoom = await post('/api/rooms', { name: 'Phòng A', title: 'Đề Toán', questions: [{ text: 'Q', choices: ['1', '2'], correct: 0 }] }, { ...hostHeaders, Origin: 'http://localhost:3000' });
+  assert.equal(okRoom.status, 200);
+  const okRoomData = await okRoom.json();
+  assert.equal(okRoomData.room.title, 'Phòng A');
+  const room3 = await post('/api/rooms', { name: 'Phòng B', questions: [{ text: 'Q', choices: ['1', '2'], correct: 0 }] }, { ...hostHeaders, Origin: 'http://localhost:3000' });
+  assert.equal(room3.status, 200);
+  const overLimit = await post('/api/rooms', { name: 'Phòng D', questions: [{ text: 'Q', choices: ['1', '2'], correct: 0 }] }, { ...hostHeaders, Origin: 'http://localhost:3000' });
+  assert.equal(overLimit.status, 409);
+  assert.equal((await overLimit.json()).message, 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn');
+  assert.equal(rooms.countActiveRoomsByHost('teacher'), 3);
   for (const player of rooms.getRawRoom(room.pin).players.filter(p => !p.isHost)) { player.score = 100; player.streak = 2; }
   assert.equal((await post(route + '/advance', { nextQ: 0, phase: 'question' }, hostHeaders)).status, 200);
   const invalidToken = rooms.submitAnswer(room.pin, { playerId: 'a', playerToken: 'wrong', qIdx: 0, choice: 1 });
