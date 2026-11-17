@@ -648,12 +648,82 @@
 /* ── HỘP CHỈNH SỬA ĐỀ THI (DƯỚI DANH SÁCH CÂU HỎI) ── */
 .edit-exams-card {
   margin-top: 0;
-  height: 342px;
+  height: auto;
+  min-height: 342px;
   box-sizing: border-box;
   flex-shrink: 0;
   min-width: 0;
   width: 100%;
   overflow: hidden;
+}
+
+.edit-exams-header {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edit-exams-header .preview-title,
+.edit-exams-header .preview-badge-count {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.saved-exam-search-wrap {
+  flex: 1 1 130px;
+  min-width: 110px;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.saved-exam-search-icon {
+  position: absolute;
+  left: 9px;
+  font-size: 0.78rem;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.saved-exam-search-input {
+  width: 100%;
+  border: 1.5px solid var(--blue-border);
+  border-radius: 8px;
+  padding: 6px 26px 6px 28px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-main, #1A237E);
+  background: var(--blue-light);
+  outline: none;
+  font-family: inherit;
+  transition: border-color .18s, background .18s, box-shadow .18s;
+}
+
+.saved-exam-search-input:focus {
+  background: var(--card-bg, #fff);
+  border-color: var(--blue-dark);
+  box-shadow: 0 0 0 2.5px rgba(21, 101, 192, 0.14);
+}
+
+.btn-clear-saved-search {
+  position: absolute;
+  right: 5px;
+  background: transparent;
+  border: none;
+  color: var(--gray-text);
+  font-size: 0.75rem;
+  font-weight: 800;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-clear-saved-search:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--blue-dark);
 }
 
 .btn-add-new-exam {
@@ -689,8 +759,8 @@
 }
 
 .saved-exams-scroll-list {
-  height: 210px;
-  max-height: 210px;
+  min-height: 195px;
+  max-height: 270px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -714,9 +784,9 @@
   border-radius: 12px;
   padding: 12px 14px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   transition: all .2s;
   min-width: 0;
 }
@@ -735,27 +805,28 @@
 .saved-exam-main {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 1;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
-  overflow: hidden;
 }
 
 .saved-exam-title {
-  font-size: 0.95rem;
+  font-size: 0.96rem;
   font-weight: 800;
   color: var(--text-main, #1A237E);
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   min-width: 0;
+  line-height: 1.38;
 }
 
-.saved-exam-title span:first-child {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.saved-exam-title-text {
+  flex: 1 1 auto;
   min-width: 0;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .exam-code-tag {
@@ -769,6 +840,7 @@
   border-radius: 6px;
   letter-spacing: 0.5px;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 body.dark .exam-code-tag {
@@ -786,6 +858,7 @@ body.dark .exam-code-tag {
   border-radius: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
 
 .saved-exam-meta {
@@ -797,24 +870,40 @@ body.dark .exam-code-tag {
 .saved-exam-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+  gap: 8px;
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(21, 101, 192, 0.18);
 }
 
 .btn-exam-action {
   border: none;
   border-radius: 8px;
-  padding: 6px 12px;
+  padding: 7px 12px;
   font-size: 0.82rem;
   font-weight: 700;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 5px;
   transition: all .2s;
+  white-space: nowrap;
+}
+
+.btn-exam-action.room {
+  flex: 1;
+  background: var(--card-bg, #ffffff);
+  color: var(--blue-dark);
+  border: 1px solid var(--blue-border);
+}
+.btn-exam-action.room:hover {
+  background: #E3F2FD;
+  border-color: var(--blue-dark);
 }
 
 .btn-exam-action.edit {
+  flex: 1;
   background: var(--blue-dark);
   color: #fff;
 }
@@ -823,10 +912,11 @@ body.dark .exam-code-tag {
 }
 
 .btn-exam-action.delete {
+  flex-shrink: 0;
   background: transparent;
   border: 1px solid var(--red);
   color: var(--red);
-  padding: 6px 9px;
+  padding: 7px 10px;
 }
 .btn-exam-action.delete:hover {
   background: var(--red);
@@ -2255,6 +2345,25 @@ body.dark .saved-exam-item {
 body.dark .saved-exam-item.active-editing {
   background: rgba(76, 175, 80, 0.15);
   border-color: #4CAF50;
+}
+body.dark .saved-exam-actions {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+body.dark .btn-exam-action.room {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--blue-dark);
+  border-color: var(--blue-border);
+}
+body.dark .btn-exam-action.room:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+body.dark .saved-exam-search-input {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  border-color: var(--blue-border);
+}
+body.dark .saved-exam-search-input:focus {
+  background: var(--card-bg);
 }
 body.dark .import-card {
   background: var(--card-bg);

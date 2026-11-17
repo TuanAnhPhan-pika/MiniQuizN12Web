@@ -146,7 +146,7 @@
                 <option value="15" selected>15 giây (Mặc định)</option>
                 <option value="20">20 giây</option>
                 <option value="30">30 giây</option>
-                <option value="60">60 giây (Tự luận ngắn)</option>
+                <option value="60">60 giây</option>
               </select>
             </div>
             <div class="form-group">
@@ -239,8 +239,13 @@
 
           <!-- Hộp thao tác: Chỉnh sửa đề thi (dưới Danh sách câu hỏi) -->
           <div class="preview-card edit-exams-card">
-            <div class="preview-header">
+            <div class="preview-header edit-exams-header">
               <div class="preview-title">Chỉnh sửa đề thi</div>
+              <div class="saved-exam-search-wrap">
+                <span class="saved-exam-search-icon" aria-hidden="true">🔍</span>
+                <input type="text" class="saved-exam-search-input" id="saved-exam-search-input" placeholder="Tìm tên đề..." autocomplete="off" oninput="handleSavedExamSearchInput()" />
+                <button type="button" class="btn-clear-saved-search" id="btn-clear-saved-search" onclick="clearSavedExamSearch()" title="Xóa tìm kiếm" style="display:none;">✕</button>
+              </div>
               <span class="preview-badge-count" id="saved-exams-count-badge">0 đề thi</span>
             </div>
             <button class="btn-add-new-exam" onclick="handleAddNewExam()">
@@ -264,7 +269,7 @@
           <div>
             <div class="editor-card-title">📥 Nhập đề thi tự động từ tập tin</div>
           </div>
-          <span class="page-badge">Nhập đề thông minh</span>
+          <span class="page-badge">Nhập đề tự động</span>
         </div>
 
         <!-- Sample files & supported formats notice -->

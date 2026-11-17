@@ -382,8 +382,15 @@ function loadQuestion(idx, roomTiming = null) {
   choicesEl.innerHTML = '';
   (q.choices || []).forEach(function(text, i) {
     const btn = document.createElement('button');
-    btn.className = 'choice-btn';
-    btn.innerHTML = '<span class="letter">' + (LETTERS[i] || (i+1)) + '</span>' + escapeHtml(text);
+    btn.className = isMulti ? 'choice-btn is-multi' : 'choice-btn';
+    if (isMulti) {
+      btn.setAttribute('role', 'checkbox');
+      btn.setAttribute('aria-checked', 'false');
+    }
+    const checkboxHtml = isMulti
+      ? '<span class="choice-checkbox" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.2 8.4 6.5 11.6 12.8 4.6"/></svg></span>'
+      : '';
+    btn.innerHTML = checkboxHtml + '<span class="letter">' + (LETTERS[i] || (i+1)) + '</span><span class="choice-label-text">' + escapeHtml(text) + '</span>';
     btn.addEventListener('click', function() {
       if (isMulti) toggleMultiChoice(i);
       else selectAnswer(i);
@@ -591,11 +598,17 @@ function toggleMultiChoice(choiceIdx) {
   const btns = document.querySelectorAll('.choice-btn');
   if (idxPos >= 0) {
     selectedChoices.splice(idxPos, 1);
-    if (btns[choiceIdx]) btns[choiceIdx].classList.remove('selected');
+    if (btns[choiceIdx]) {
+      btns[choiceIdx].classList.remove('selected');
+      btns[choiceIdx].setAttribute('aria-checked', 'false');
+    }
   } else {
     selectedChoices.push(choiceIdx);
     selectedChoices.sort((a, b) => a - b);
-    if (btns[choiceIdx]) btns[choiceIdx].classList.add('selected');
+    if (btns[choiceIdx]) {
+      btns[choiceIdx].classList.add('selected');
+      btns[choiceIdx].setAttribute('aria-checked', 'true');
+    }
   }
   const submitMultiBtn = document.getElementById('btn-submit-multi');
   if (submitMultiBtn) {

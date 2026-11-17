@@ -526,12 +526,81 @@
   }
 
   /* ── RENDER SAVED EXAMS LIST (PRIVATE STORAGE) ── */
+  let savedExamSearchQuery = '';
+
+  function normalizeSavedExamSearchKey(str) {
+    return String(str || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'D')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function scoreSavedExamSearchMatch(exam, normalizedQuery) {
+    if (!normalizedQuery) return 1;
+    const normTitle = normalizeSavedExamSearchKey(exam && exam.title);
+    if (!normTitle) return 0;
+
+    if (normTitle === normalizedQuery) return 1000;
+    if (normTitle.startsWith(normalizedQuery)) return 850 - normTitle.length * 0.01;
+
+    const wordIdx = (' ' + normTitle).indexOf(' ' + normalizedQuery);
+    if (wordIdx >= 0) return 700 - wordIdx * 0.1;
+
+    const subIdx = normTitle.indexOf(normalizedQuery);
+    if (subIdx >= 0) return 550 - subIdx * 0.1;
+
+    const tokens = normalizedQuery.split(' ').filter(Boolean);
+    if (tokens.length > 1 && tokens.every(tok => normTitle.includes(tok))) {
+      const posSum = tokens.reduce((sum, tok) => sum + normTitle.indexOf(tok), 0);
+      return 400 - posSum * 0.1;
+    }
+
+    return 0;
+  }
+
+  function handleSavedExamSearchInput() {
+    const inputEl = document.getElementById('saved-exam-search-input');
+    savedExamSearchQuery = inputEl ? inputEl.value : '';
+    renderSavedExamsList();
+  }
+
+  function clearSavedExamSearch() {
+    savedExamSearchQuery = '';
+    const inputEl = document.getElementById('saved-exam-search-input');
+    if (inputEl) {
+      inputEl.value = '';
+      inputEl.focus();
+    }
+    renderSavedExamsList();
+  }
+
   function renderSavedExamsList() {
     const listEl = document.getElementById('saved-exams-list');
     const badgeEl = document.getElementById('saved-exams-count-badge');
+    const clearBtn = document.getElementById('btn-clear-saved-search');
     const exams = getSavedExams();
 
-    if (badgeEl) badgeEl.textContent = exams.length + ' đề thi';
+    const normQuery = normalizeSavedExamSearchKey(savedExamSearchQuery);
+    if (clearBtn) clearBtn.style.display = savedExamSearchQuery ? 'inline-flex' : 'none';
+
+    let visibleExams = exams;
+    if (normQuery) {
+      visibleExams = exams
+        .map((exam, idx) => ({ exam, idx, score: scoreSavedExamSearchMatch(exam, normQuery) }))
+        .filter(entry => entry.score > 0)
+        .sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+        .map(entry => entry.exam);
+    }
+
+    if (badgeEl) {
+      badgeEl.textContent = normQuery
+        ? (visibleExams.length + ' / ' + exams.length + ' đề thi')
+        : (exams.length + ' đề thi');
+    }
     if (!listEl) return;
 
     if (exams.length === 0) {
@@ -539,7 +608,12 @@
       return;
     }
 
-    listEl.innerHTML = exams.map(exam => {
+    if (visibleExams.length === 0) {
+      listEl.innerHTML = '<div style="color: var(--gray-text); font-size: 0.85rem; padding: 20px 8px; text-align: center;">Không tìm thấy đề thi nào có tên chứa "<b>' + escapeHtml(savedExamSearchQuery.trim()) + '</b>".</div>';
+      return;
+    }
+
+    listEl.innerHTML = visibleExams.map(exam => {
       const isEditing = (exam.id === currentEditingExamId);
       const qCount = exam.questions ? exam.questions.length : 0;
       const code = exam.code || '#00000000';
@@ -547,8 +621,8 @@
 
       return '<div class="saved-exam-item ' + (isEditing ? 'active-editing' : '') + '" id="saved-exam-' + exam.id + '">'
         + '<div class="saved-exam-main">'
-        + '  <div class="saved-exam-title">'
-        + '    <span>' + escapeHtml(exam.title) + '</span>'
+        + '  <div class="saved-exam-title" title="' + escapeHtml(exam.title) + '">'
+        + '    <span class="saved-exam-title-text">' + escapeHtml(exam.title) + '</span>'
         + '    <span class="exam-code-tag">(' + escapeHtml(code) + ')</span>'
         + '    ' + editingBadge
         + '  </div>'

@@ -29,7 +29,7 @@
           const pct = Math.round(Number(item.accuracyPct) || 0);
           const pctTone = pct < 50 ? 'tone-low' : (pct < 70 ? 'tone-mid' : 'tone-ok');
           return `
-            <div class="ai-weak-item">
+            <div class="ai-weak-item ${pctTone}">
               <div class="ai-weak-item-top">
                 <span class="ai-weak-qtitle">Câu ${Number(item.qIdx) || 1}: ${escapeHtml(item.topicOrSkill)}</span>
                 <span class="ai-weak-pct ${pctTone}">${pct}% đúng</span>

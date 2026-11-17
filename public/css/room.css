@@ -166,6 +166,73 @@ main {
 
 .choice-btn:disabled { cursor: default; }
 
+.choice-label-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.choice-checkbox {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--blue-dark);
+  background: #ffffff;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s, box-shadow .15s;
+}
+.choice-checkbox svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity .14s ease, transform .14s ease;
+}
+.choice-btn.is-multi:hover:not(:disabled) .choice-checkbox {
+  box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.14);
+}
+.choice-btn.is-multi.selected .choice-checkbox {
+  background: var(--blue-dark);
+  border-color: var(--blue-dark);
+}
+.choice-btn.is-multi.selected .choice-checkbox svg {
+  opacity: 1;
+  transform: scale(1);
+}
+.choice-btn.is-multi.correct .choice-checkbox {
+  background: #4CAF50;
+  border-color: #4CAF50;
+}
+.choice-btn.is-multi.correct .choice-checkbox svg {
+  opacity: 1;
+  transform: scale(1);
+}
+.choice-btn.is-multi.wrong .choice-checkbox {
+  background: var(--red);
+  border-color: var(--red);
+}
+.choice-btn.is-multi.wrong .choice-checkbox svg {
+  opacity: 1;
+  transform: scale(1);
+}
+.choice-btn.is-multi.reveal-correct .choice-checkbox {
+  border-color: #4CAF50;
+  background: #ffffff;
+}
+
+body.dark .choice-checkbox {
+  background: rgba(15, 23, 42, 0.75);
+  border-color: #64B5F6;
+}
+body.dark .choice-btn.is-multi.reveal-correct .choice-checkbox {
+  background: rgba(15, 23, 42, 0.75);
+  border-color: #66BB6A;
+}
+
 .question-type-hint {
   display: inline-block;
   margin-bottom: 12px;
