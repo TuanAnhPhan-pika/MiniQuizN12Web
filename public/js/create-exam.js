@@ -415,8 +415,45 @@
     resetQuestionForm();
   }
 
-  function deleteQuestion(idx) {
-    if (confirm('Bạn có chắc muốn xóa câu hỏi ' + (idx + 1) + '?')) {
+  let simpleConfirmResolver = null;
+
+  function showSimpleConfirm(message, okLabel = 'Xác nhận xóa') {
+    const modal = document.getElementById('simple-confirm-modal');
+    const textEl = document.getElementById('simple-confirm-text');
+    const okBtn = document.getElementById('btn-simple-confirm-ok');
+    if (!modal || !textEl || !okBtn) {
+      return Promise.resolve(false);
+    }
+    if (simpleConfirmResolver) {
+      simpleConfirmResolver(false);
+      simpleConfirmResolver = null;
+    }
+    textEl.textContent = message;
+    okBtn.textContent = okLabel;
+    modal.classList.add('show');
+    return new Promise(resolve => {
+      simpleConfirmResolver = resolve;
+    });
+  }
+
+  function resolveSimpleConfirm(confirmed) {
+    const modal = document.getElementById('simple-confirm-modal');
+    if (modal) modal.classList.remove('show');
+    if (simpleConfirmResolver) {
+      const done = simpleConfirmResolver;
+      simpleConfirmResolver = null;
+      done(!!confirmed);
+    }
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && simpleConfirmResolver) {
+      resolveSimpleConfirm(false);
+    }
+  });
+
+  async function deleteQuestion(idx) {
+    if (await showSimpleConfirm('Bạn có chắc muốn xóa câu hỏi ' + (idx + 1) + '?', 'Xác nhận xóa')) {
       currentQuestions.splice(idx, 1);
       if (editingQuestionIndex === idx) cancelEditQuestion();
       renderQuestionsList();
@@ -657,15 +694,9 @@
     window.location.href = 'create-room.html?examId=' + encodeURIComponent(exam.id);
   }
 
-  function deleteExamFromEditor(examId) {
-    if (confirm('Bạn có chắc muốn xóa đề thi này khỏi Private Storage?')) {
-      deleteSavedExam(examId);
-      if (currentEditingExamId === examId) {
-        currentEditingExamId = null;
-      }
-      renderSavedExamsList();
-      renderShareTab();
-      showToast('🗑️ Đã xóa đề thi khỏi kho cá nhân!');
+  async function deleteExamFromEditor(examId) {
+    if (await showSimpleConfirm('Bạn có chắc muốn xóa đề thi này?', 'Xác nhận xóa')) {
+      performDeleteSavedExam(examId);
     }
   }
 
@@ -755,8 +786,8 @@
     window.location.href = 'create-room.html?examId=' + encodeURIComponent(exam.id);
   }
 
-  function handleClearAll() {
-    if (confirm('Bạn có chắc muốn xóa toàn bộ câu hỏi của đề thi đang sửa để soạn lại?')) {
+  async function handleClearAll() {
+    if (await showSimpleConfirm('Bạn có chắc muốn xóa toàn bộ câu hỏi của đề thi đang sửa?', 'Xác nhận xóa')) {
       currentQuestions = [];
       cancelEditQuestion();
       renderQuestionsList();
@@ -1527,11 +1558,15 @@
   let currentSharingExamId = null;
   let warningTargetExamId = null;
 
-  function showShareWarningModal(exam, parentExam, parentCode) {
+  function showShareWarningModal(exam, parentExam, parentCode, diffPercent = null) {
     warningTargetExamId = exam.id;
     const msgEl = document.getElementById('share-warning-msg');
     if (msgEl) {
-      msgEl.innerHTML = 'Đề thi này là bản sao của "<b>' + escapeHtml(parentExam.title) + '</b>" (<span class="exam-code-tag">' + escapeHtml(parentCode) + '</span>).<br><br>Bạn cần <b>chỉnh sửa nội dung khác biệt ít nhất 10%</b> so với bản gốc mới có thể chia sẻ lên Ngân hàng đề!';
+      const parentTitle = parentExam && parentExam.title ? parentExam.title : 'Đề gốc';
+      const diffNote = typeof diffPercent === 'number'
+        ? `Mức độ khác biệt hiện tại mới đạt <b>${diffPercent}%</b>. `
+        : '';
+      msgEl.innerHTML = 'Đề thi này là bản sao của "<b>' + escapeHtml(parentTitle) + '</b>" (<span class="exam-code-tag">' + escapeHtml(parentCode) + '</span>).<br><br>' + diffNote + 'Bạn cần <b>chỉnh sửa nội dung khác biệt ít nhất 10%</b> so với bản gốc mới có thể chia sẻ lên Ngân hàng đề!';
     }
     const modal = document.getElementById('share-warning-modal');
     if (modal) modal.classList.add('show');
@@ -1553,22 +1588,46 @@
     }
   }
 
-  function openShareModal(examId) {
+  async function openShareModal(examId) {
     const userExams = getSavedExams();
     const exam = userExams.find(e => e.id === examId);
     if (!exam) return;
 
-    // Kiểm tra đề có hậu tố -N (bản sao tải từ ngân hàng)
+    // Nhận diện đề sao chép qua parentCode (hoặc hậu tố -N ở fallback cũ)
     const examCode = String(exam.code || '').trim();
     const lastDashIdx = examCode.lastIndexOf('-');
-    if (lastDashIdx !== -1) {
-      const parentCode = examCode.substring(0, lastDashIdx);
-      const parentExam = (publicExamsCache || []).find(e => e.code === parentCode);
-      if (parentExam) {
-        const diffPercent = calculateExamDiffPercent(parentExam, exam);
-        if (diffPercent < 10) {
-          showShareWarningModal(exam, parentExam, parentCode);
-          return;
+    const legacyParentCode = lastDashIdx > 0 ? examCode.substring(0, lastDashIdx) : '';
+    const parentCode = String(exam.parentCode || '').trim() || legacyParentCode;
+
+    if (parentCode) {
+      let handledByServer = false;
+      try {
+        const checkRes = await fetch('/api/storage/public/check-share', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ exam })
+        });
+        if (checkRes.ok) {
+          handledByServer = true;
+          const checkData = await checkRes.json();
+          if (checkData.success && checkData.allowed === false) {
+            const pCode = checkData.parentCode || parentCode;
+            const pTitle = checkData.parentTitle || ((publicExamsCache || []).find(e => e.code === pCode)?.title) || 'Đề gốc';
+            showShareWarningModal(exam, { title: pTitle }, pCode, typeof checkData.diffPercent === 'number' ? checkData.diffPercent : null);
+            return;
+          }
+        }
+      } catch (e) {}
+
+      if (!handledByServer) {
+        const parentExam = (publicExamsCache || []).find(e => e.code === parentCode);
+        if (parentExam) {
+          const diffPercent = calculateExamDiffPercent(parentExam, exam);
+          if (diffPercent < 10) {
+            showShareWarningModal(exam, parentExam, parentCode, Math.round(diffPercent * 10) / 10);
+            return;
+          }
         }
       }
     }
@@ -1635,12 +1694,14 @@
         const errData = await res.json().catch(() => ({}));
         const msg = errData.message || 'Không thể chia sẻ đề thi lên máy chủ.';
         closeShareModal();
-        const examCode = String(exam.code || '').trim();
-        const lastDashIdx = examCode.lastIndexOf('-');
-        const parentCode = lastDashIdx !== -1 ? examCode.substring(0, lastDashIdx) : '';
-        const parentExam = parentCode ? (publicExamsCache || []).find(e => e.code === parentCode) : null;
-        if (parentExam) {
-          showShareWarningModal(exam, parentExam, parentCode);
+        if (res.status === 409 || errData.code === 'COPY_SIMILARITY_TOO_HIGH') {
+          const examCode = String(exam.code || '').trim();
+          const lastDashIdx = examCode.lastIndexOf('-');
+          const fallbackParentCode = String(exam.parentCode || '').trim() || (lastDashIdx > 0 ? examCode.substring(0, lastDashIdx) : '');
+          const pCode = errData.parentCode || fallbackParentCode;
+          const cachedParent = pCode ? (publicExamsCache || []).find(e => e.code === pCode) : null;
+          const pTitle = errData.parentTitle || (cachedParent ? cachedParent.title : 'Đề gốc');
+          showShareWarningModal(exam, { title: pTitle }, pCode, typeof errData.diffPercent === 'number' ? errData.diffPercent : null);
         } else {
           showToast('⚠️ ' + msg);
         }
@@ -1654,7 +1715,7 @@
 
   /* Gỡ đề thi khỏi Ngân hàng đề công khai */
   async function unshareExamFromPublic(examId) {
-    if (!confirm('Bạn có chắc muốn gỡ đề thi này khỏi Ngân hàng đề công khai?')) return;
+    if (!(await showSimpleConfirm('Bạn có chắc muốn gỡ đề thi này khỏi Ngân hàng đề công khai?', 'Xác nhận gỡ'))) return;
     try {
       const res = await fetch('/api/storage/public/' + encodeURIComponent(examId), {
         method: 'DELETE',
@@ -1682,23 +1743,27 @@
     renderSavedExamsList();
   }
 
-  function deleteSavedExam(examId) {
-    if (confirm('Bạn có chắc muốn xóa đề thi đã lưu này khỏi Private Storage?')) {
-      let exams = getSavedExams();
-      exams = exams.filter(e => e.id !== examId);
-      setSavedExams(exams);
+  function performDeleteSavedExam(examId) {
+    let exams = getSavedExams();
+    exams = exams.filter(e => e.id !== examId);
+    setSavedExams(exams);
 
-      fetch('/api/storage/private/' + encodeURIComponent(examId), {
-        method: 'DELETE',
-        credentials: 'same-origin'
-      }).catch(() => {});
+    fetch('/api/storage/private/' + encodeURIComponent(examId), {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    }).catch(() => {});
 
-      if (currentEditingExamId === examId) {
-        currentEditingExamId = null;
-      }
-      renderSavedExamsList();
-      renderShareTab();
-      showToast('🗑️ Đã xóa đề thi khỏi kho cá nhân!');
+    if (currentEditingExamId === examId) {
+      currentEditingExamId = null;
+    }
+    renderSavedExamsList();
+    renderShareTab();
+    showToast('🗑️ Đã xóa đề thi khỏi kho cá nhân!');
+  }
+
+  async function deleteSavedExam(examId) {
+    if (await showSimpleConfirm('Bạn có chắc muốn xóa đề thi này?', 'Xác nhận xóa')) {
+      performDeleteSavedExam(examId);
     }
   }
 
@@ -1711,20 +1776,20 @@
     });
   }
 
-  function canonicalizeQuestion(q) {
+  function canonicalizeQuestion(q, includeCorrect = true) {
     if (!q) return '';
     const text = String(q.text || '').trim().toLowerCase().replace(/\s+/g, ' ');
     const choices = (q.choices || []).map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' '));
-    const correctList = getQuestionCorrectList(q);
-    const correctText = correctList.map(idx => choices[idx] || '').sort().join(',');
+    const correctList = includeCorrect ? getQuestionCorrectList(q) : [];
+    const correctText = includeCorrect ? correctList.map(idx => choices[idx] || '').sort().join('|') : '';
     const sortedChoices = [...choices].sort().join('|');
     return `q:${text}#c:${correctText}#ch:${sortedChoices}`;
   }
 
-  function getCanonicalExamString(exam) {
+  function getCanonicalExamString(exam, includeCorrect = true) {
     if (!exam) return '';
     const title = String(exam.title || '').trim().toLowerCase().replace(/\s+/g, ' ');
-    const canonicalQuestions = (exam.questions || []).map(canonicalizeQuestion).sort();
+    const canonicalQuestions = (exam.questions || []).map(q => canonicalizeQuestion(q, includeCorrect)).sort();
     return `title:${title}\nquestions:\n${canonicalQuestions.join('\n')}`;
   }
 
@@ -1747,8 +1812,11 @@
   }
 
   function calculateExamDiffPercent(parentExam, currentExam) {
-    const s1 = getCanonicalExamString(parentExam);
-    const s2 = getCanonicalExamString(currentExam);
+    const hasParentAnswers = Array.isArray(parentExam?.questions) && parentExam.questions.some(
+      q => (Array.isArray(q?.correctChoices) && q.correctChoices.length > 0) || typeof q?.correct === 'number'
+    );
+    const s1 = getCanonicalExamString(parentExam, hasParentAnswers);
+    const s2 = getCanonicalExamString(currentExam, hasParentAnswers);
     if (s1 === s2) return 0;
     const dist = levenshteinDistance(s1, s2);
     const maxLen = Math.max(s1.length, s2.length);

@@ -580,3 +580,164 @@ D. Bốn
   assert.equal(csvRes.questions[0].isMultiple, true);
 });
 
+test('Public share copy similarity check enforces 10% threshold using full parent answers', async t => {
+  const parentPublicExam = {
+    id: 'pub-orig-1',
+    code: '#orig',
+    title: 'Đề kiểm tra Lịch sử Việt Nam cổ đại và trung đại',
+    isPublic: true,
+    questions: [
+      {
+        text: 'Chiến thắng Bạch Đằng năm 938 do ai lãnh đạo để đánh bại quân Nam Hán?',
+        choices: ['Ngô Quyền', 'Lê Hoàn', 'Lý Thường Kiệt', 'Trần Hưng Đạo'],
+        correct: 0,
+      },
+      {
+        text: 'Nhà Lý dời đô từ Hoa Lư ra thành Đại La và đổi tên thành Thăng Long vào năm nào?',
+        choices: ['Năm 968', 'Năm 1010', 'Năm 1054', 'Năm 1225'],
+        correct: 1,
+      },
+    ],
+  };
+
+  let savedPublicCount = 0;
+  const savedPrivateCopy = {
+    id: 'priv-copy-1',
+    code: '#c999',
+    parentCode: '#orig',
+    title: parentPublicExam.title,
+    questions: parentPublicExam.questions,
+  };
+
+  const db = {
+    async saveAttempt() {},
+    async saveHostedGameSession() {},
+    async getPublicQuizzes() {
+      // Public list omits correct answers just like production
+      return [{
+        ...parentPublicExam,
+        questions: parentPublicExam.questions.map(q => ({ text: q.text, choices: q.choices })),
+      }];
+    },
+    async getPublicQuizById(id, options = {}) {
+      if (id !== '#orig' && id !== 'pub-orig-1') return null;
+      if (options.includeCorrect) return JSON.parse(JSON.stringify(parentPublicExam));
+      return {
+        ...parentPublicExam,
+        questions: parentPublicExam.questions.map(q => ({ text: q.text, choices: q.choices })),
+      };
+    },
+    async getQuizById(id) {
+      if (id === 'priv-copy-1') return JSON.parse(JSON.stringify(savedPrivateCopy));
+      return null;
+    },
+    async saveQuiz(exam, owner, isPublic) {
+      if (isPublic) savedPublicCount++;
+      return { ...exam, isPublic };
+    },
+  };
+
+  const rooms = load('src/rooms/manager.js', { '../db/index.js': db });
+  const auth = {
+    parseCookies: () => ({}),
+    getSession: token => token === 'teacher-session' ? { username: 'teacher' } : null,
+    findUserByUsernameSync: () => ({ id: 10, role: 'teacher' }),
+  };
+  const { server } = load('src/server.js', {
+    dotenv: { config() {} }, './auth.js': auth, './db/index.js': db,
+    './db/migrate.js': {}, './rooms/manager.js': rooms,
+  }, '\nmodule.exports = { server };');
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const post = (route, body) => fetch(url + route, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer teacher-session' },
+    body: JSON.stringify(body),
+  });
+
+  // 1. Unchanged copy (same content & same answers) -> 0% diff -> rejected
+  const checkUnchanged = await (await post('/api/storage/public/check-share', { exam: savedPrivateCopy })).json();
+  assert.equal(checkUnchanged.success, true);
+  assert.equal(checkUnchanged.allowed, false);
+  assert.equal(checkUnchanged.diffPercent, 0);
+  assert.equal(Object.hasOwn(checkUnchanged, 'questions'), false);
+
+  const shareUnchangedRes = await post('/api/storage/public/share', { exam: savedPrivateCopy });
+  assert.equal(shareUnchangedRes.status, 409);
+  const shareUnchangedData = await shareUnchangedRes.json();
+  assert.equal(shareUnchangedData.code, 'COPY_SIMILARITY_TOO_HIGH');
+  assert.equal(shareUnchangedData.diffPercent, 0);
+  assert.equal(savedPublicCount, 0);
+
+  // 2. Shuffled questions & shuffled choices -> still 0% diff -> rejected 409
+  const shuffledCopy = {
+    ...savedPrivateCopy,
+    questions: [
+      {
+        text: parentPublicExam.questions[1].text,
+        choices: ['Năm 1225', 'Năm 1010', 'Năm 968', 'Năm 1054'],
+        correct: 1,
+      },
+      {
+        text: parentPublicExam.questions[0].text,
+        choices: ['Trần Hưng Đạo', 'Lý Thường Kiệt', 'Ngô Quyền', 'Lê Hoàn'],
+        correct: 2,
+      },
+    ],
+  };
+  assert.equal((await post('/api/storage/public/share', { exam: shuffledCopy })).status, 409);
+  assert.equal(savedPublicCount, 0);
+
+  // 3. Minor edit (< 10%) & client omitted parentCode -> server resolves parentCode via DB id & rejects 409
+  const minorEditCopy = {
+    id: 'priv-copy-1',
+    code: '#c999',
+    title: 'Đề kiểm tra Lịch sử Việt Nam cổ đại và trung đại 2',
+    questions: parentPublicExam.questions,
+  };
+  const minorRes = await post('/api/storage/public/share', { exam: minorEditCopy });
+  assert.equal(minorRes.status, 409);
+  const minorData = await minorRes.json();
+  assert.ok(minorData.diffPercent > 0 && minorData.diffPercent < 10);
+  assert.equal(savedPublicCount, 0);
+
+  // 4. Substantial edit (>= 10%) -> allowed & published (200)
+  const majorEditCopy = {
+    ...savedPrivateCopy,
+    title: 'Bộ đề ôn tập chuyên sâu Lịch sử Việt Nam thời phong kiến',
+    questions: [
+      {
+        text: 'Ai là người sáng lập triều đại nhà Lý và ban Chiếu dời đô năm 1010?',
+        choices: ['Lý Công Uẩn', 'Lý Thường Kiệt', 'Đinh Bộ Lĩnh', 'Lê Đại Hành'],
+        correct: 0,
+      },
+      ...parentPublicExam.questions.slice(1),
+    ],
+  };
+  const checkMajor = await (await post('/api/storage/public/check-share', { exam: majorEditCopy })).json();
+  assert.equal(checkMajor.allowed, true);
+  assert.ok(checkMajor.diffPercent >= 10);
+
+  const shareMajorRes = await post('/api/storage/public/share', { exam: majorEditCopy });
+  assert.equal(shareMajorRes.status, 200);
+  const shareMajorData = await shareMajorRes.json();
+  assert.equal(shareMajorData.success, true);
+  assert.equal(savedPublicCount, 1);
+
+  // 5. Original exam (no parentCode) even with colliding code '#orig' -> NOT blocked by false parentCode fallback
+  const brandNewExam = {
+    id: 'priv-new-1',
+    code: '#orig',
+    title: parentPublicExam.title,
+    questions: parentPublicExam.questions,
+  };
+  const brandNewRes = await post('/api/storage/public/share', { exam: brandNewExam });
+  assert.equal(brandNewRes.status, 200);
+  const brandNewData = await brandNewRes.json();
+  assert.equal(brandNewData.success, true);
+  assert.notEqual(brandNewData.shareCode, '#orig');
+  assert.equal(savedPublicCount, 2);
+});
+

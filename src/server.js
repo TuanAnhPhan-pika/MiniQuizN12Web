@@ -86,6 +86,8 @@ function levenshteinDistance(a, b) {
   return v0[b.length];
 }
 
+const MIN_COPY_DIFF_PERCENT = 10;
+
 function calculateExamDiffPercent(parentExam, currentExam) {
   const s1 = getCanonicalExamString(parentExam);
   const s2 = getCanonicalExamString(currentExam);
@@ -1028,6 +1030,81 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  async function evaluateCopySimilarity(incomingExam, sessionUser) {
+    let parentCode = String(incomingExam.parentCode || '').trim();
+    if (!parentCode && incomingExam.id && typeof db.getQuizById === 'function') {
+      const savedPrivate = await db.getQuizById(incomingExam.id, { includeCorrect: false, requestingUser: sessionUser });
+      if (savedPrivate && savedPrivate.parentCode) {
+        parentCode = String(savedPrivate.parentCode).trim();
+      }
+    }
+    if (!parentCode) {
+      const examCode = String(incomingExam.code || '').trim();
+      const lastDashIdx = examCode.lastIndexOf('-');
+      if (lastDashIdx > 0) {
+        parentCode = examCode.substring(0, lastDashIdx);
+      }
+    }
+
+    if (!parentCode || typeof db.getPublicQuizById !== 'function') {
+      return {
+        checked: false,
+        allowed: true,
+        diffPercent: 100,
+        minDiffPercent: MIN_COPY_DIFF_PERCENT,
+        parentCode: '',
+        parentTitle: ''
+      };
+    }
+
+    // Luôn tải đề gốc công khai kèm đáp án đúng ở phía server để so sánh chính xác, không trả đáp án ra ngoài
+    const parentExam = await db.getPublicQuizById(parentCode, { includeCorrect: true });
+    if (!parentExam) {
+      return {
+        checked: false,
+        allowed: true,
+        diffPercent: 100,
+        minDiffPercent: MIN_COPY_DIFF_PERCENT,
+        parentCode,
+        parentTitle: ''
+      };
+    }
+
+    const rawDiff = calculateExamDiffPercent(parentExam, incomingExam);
+    const diffPercent = Math.round(rawDiff * 10) / 10;
+    return {
+      checked: true,
+      allowed: rawDiff >= MIN_COPY_DIFF_PERCENT,
+      diffPercent,
+      minDiffPercent: MIN_COPY_DIFF_PERCENT,
+      parentCode: parentExam.code || parentCode,
+      parentTitle: parentExam.title || ''
+    };
+  }
+
+  // 4b. [POST] /api/storage/public/check-share - Kiểm tra tỷ lệ khác biệt trước khi chia sẻ
+  if (method === 'POST' && pathname === '/api/storage/public/check-share') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập. Vui lòng đăng nhập để chia sẻ đề thi.' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const incomingExam = body.exam || body;
+      if (!incomingExam || !incomingExam.title) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
+        return;
+      }
+      const check = await evaluateCopySimilarity(incomingExam, sessionUser);
+      sendJSON(res, 200, { success: true, ...check });
+      return;
+    } catch (err) {
+      sendJSON(res, 500, { success: false, message: err.message });
+      return;
+    }
+  }
+
   // 5. [POST] /api/storage/public/share
   if (method === 'POST' && pathname === '/api/storage/public/share') {
     const sessionUser = getSessionUser(req);
@@ -1043,26 +1120,23 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const publicExams = await db.getPublicQuizzes();
-      let parentCode = incomingExam.parentCode || incomingExam.code || '';
-      let parentExam = publicExams.find(e => e.code === parentCode);
-
-      if (parentExam) {
-        const diffPercent = calculateExamDiffPercent(parentExam, incomingExam);
-        if (diffPercent < 5) {
-          sendJSON(res, 200, {
-            success: true,
-            isOriginal: true,
-            diffPercent: Math.round(diffPercent * 10) / 10,
-            shareCode: parentExam.code,
-            exam: parentExam,
-            message: `Nội dung giống ${100 - Math.round(diffPercent)}% đề gốc. Hệ thống dùng lại mã chia sẻ cũ!`
-          });
-          return;
-        }
+      const similarity = await evaluateCopySimilarity(incomingExam, sessionUser);
+      if (!similarity.allowed) {
+        sendJSON(res, 409, {
+          success: false,
+          code: 'COPY_SIMILARITY_TOO_HIGH',
+          diffPercent: similarity.diffPercent,
+          minDiffPercent: similarity.minDiffPercent,
+          parentCode: similarity.parentCode,
+          parentTitle: similarity.parentTitle,
+          message: `Đề thi là bản sao của "${similarity.parentTitle}" (${similarity.parentCode}) và mới khác biệt ${similarity.diffPercent}%. Cần chỉnh sửa khác biệt ít nhất ${similarity.minDiffPercent}% mới có thể chia sẻ lại!`
+        });
+        return;
       }
 
-      // Đề mới hoặc có chỉnh sửa trên 5%
+      const publicExams = await db.getPublicQuizzes();
+
+      // Đề mới hoặc bản sao đã chỉnh sửa đạt ngưỡng 10%
       let baseCode = incomingExam.code ? incomingExam.code.replace(/^#/, '') : Math.random().toString(16).slice(2, 6);
       let newCode = `#${baseCode}`;
       if (publicExams.some(e => e.code === newCode)) {
@@ -1074,7 +1148,7 @@ const server = http.createServer(async (req, res) => {
         id: `exam-${Date.now()}`,
         code: newCode,
         isPublic: true,
-        parentCode: parentCode,
+        parentCode: similarity.parentCode || incomingExam.parentCode || '',
         copiesIssued: 0,
         sharedBy: sessionUser.username,
         sharedAt: new Date().toISOString(),
