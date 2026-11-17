@@ -8,7 +8,19 @@
     "start": "node server.js",
     "dev": "node server.js",
     "lint": "node scripts/check-syntax.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node \"Test Suite/run.cjs\" all",
+    "test:suite": "node \"Test Suite/run.cjs\" all",
+    "test:backend": "node \"Test Suite/run.cjs\" backend",
+    "test:frontend": "node \"Test Suite/run.cjs\" frontend",
+    "test:resilience": "node \"Test Suite/run.cjs\" resilience",
+    "test:database": "node \"Test Suite/run.cjs\" database",
+    "test:coverage": "node \"Test Suite/run.cjs\" coverage",
+    "test:coverage:check": "node \"Test Suite/run.cjs\" check",
+    "test:coverage:database": "node \"Test Suite/run.cjs\" coverage:database",
+    "test:performance": "node \"Test Suite/run.cjs\" performance",
+    "test:browser:login": "node \"Test Suite/browser/browser-login.js\" --mock",
+    "test:browser:security": "node \"Test Suite/browser/browser-security.js\"",
+    "test:browser": "npm run test:browser:login && npm run test:browser:security"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -26,5 +38,10 @@
     "@supabase/supabase-js": "^2.117.2",
     "dotenv": "^18.0.4",
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "c8": "^12.0.0",
+    "jsdom": "^29.1.1",
+    "playwright": "^1.65.1"
   }
 }

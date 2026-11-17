@@ -10,9 +10,9 @@ test('PostgreSQL integration suite (gated by RUN_DB_TESTS=1 + DATABASE_URL)', {
     ? 'Skipped real DB integration tests (set RUN_DB_TESTS=1 and TEST_DATABASE_URL/DATABASE_URL to enable)'
     : false,
 }, async t => {
-  const poolMod = require('../src/db/pool.js');
-  const migrateMod = require('../src/db/migrate.js');
-  const db = require('../src/db/index.js');
+  const poolMod = require('../../src/db/pool.js');
+  const migrateMod = require('../../src/db/migrate.js');
+  const db = require('../../src/db/index.js');
 
   const suffix = crypto.randomBytes(4).toString('hex');
   const testUser = `it_teacher_${suffix}`;
@@ -74,11 +74,8 @@ test('PostgreSQL integration suite (gated by RUN_DB_TESTS=1 + DATABASE_URL)', {
   });
 
   await t.test('saveQuiz() handles v1 -> v2 multi-choice versioning and getQuizById() readback', async () => {
-    await poolMod.query(
-      `INSERT INTO users (username, username_lower, display_name, password_hash, salt, created_at, role)
-       VALUES ($1, $2, 'Integration Teacher', 'aa', 'bb', $3, 'teacher')`,
-      [testUser, testUser.toLowerCase(), Date.now()]
-    );
+    await db.createUser({ username: testUser, displayName: 'Integration Teacher',
+      passwordHash: 'aa', salt: 'bb', createdAt: Date.now() });
 
     const v1 = await db.saveQuiz({
       id: testQuizId,

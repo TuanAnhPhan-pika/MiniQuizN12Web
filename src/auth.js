@@ -258,10 +258,22 @@ function createSession(username) {
   memorySessions.set(token, sess);
   
   // Lưu bất đồng bộ vào PostgreSQL
-  db.saveSession(token, username, expiresAt).catch(err => {
+  db.saveSession(token, username, expiresAt, now).catch(err => {
     console.error('Lỗi lưu session vào PostgreSQL:', err.message);
   });
 
+  return token;
+}
+
+/**
+ * Tạo phiên đăng nhập mới và chờ ghi xong vào PostgreSQL trước khi lưu cache RAM.
+ */
+async function createSessionPersisted(username) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const now = Date.now();
+  const expiresAt = now + SESSION_TTL_MS;
+  await db.saveSession(token, username, expiresAt, now);
+  memorySessions.set(token, { username, createdAt: now, expiresAt });
   return token;
 }
 
@@ -446,6 +458,7 @@ module.exports = {
   validateDisplayName,
   validatePassword,
   createSession,
+  createSessionPersisted,
   getSession,
   deleteSession,
   deleteOtherSessions,

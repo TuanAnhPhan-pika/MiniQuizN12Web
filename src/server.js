@@ -412,7 +412,9 @@ async function handleHttpRequest(req, res) {
       }
 
       auth.recordRegister(ip);
-      const token = auth.createSession(username);
+      const token = typeof auth.createSessionPersisted === 'function'
+        ? await auth.createSessionPersisted(username)
+        : auth.createSession(username);
       sendJSON(res, 200, {
         success: true,
         token,
@@ -437,17 +439,49 @@ async function handleHttpRequest(req, res) {
       const ip = getClientIp(req);
       const lock = auth.checkLoginLock(ip);
       if (lock.locked) {
-        sendJSON(res, 429, { success: false, message: `Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau ${lock.waitSeconds} giây.` });
+        sendJSON(res, 429, {
+          success: false,
+          code: 'LOGIN_LOCKED',
+          message: `Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau ${lock.waitSeconds} giây.`
+        });
         return;
       }
 
-      const body = await readJsonBody(req);
-      const { username, password } = body;
-      const user = await auth.findUserByUsername(username);
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (parseErr) {
+        if (parseErr.status !== 400) {
+          sendRequestError(res, parseErr);
+          return;
+        }
+        sendJSON(res, 400, {
+          success: false,
+          code: 'INVALID_JSON',
+          message: 'Dữ liệu yêu cầu không đúng định dạng JSON.'
+        });
+        return;
+      }
 
+      const username = body && typeof body.username === 'string' ? body.username.trim() : '';
+      const password = body && typeof body.password === 'string' ? body.password : '';
+      if (!username || !password) {
+        sendJSON(res, 400, {
+          success: false,
+          code: 'MISSING_CREDENTIALS',
+          message: !username ? 'Vui lòng nhập tài khoản.' : 'Vui lòng nhập mật khẩu.'
+        });
+        return;
+      }
+
+      const user = await auth.findUserByUsername(username);
       if (!user) {
         const fail = auth.recordLoginFailure(ip);
-        sendJSON(res, 401, { success: false, message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.' });
+        sendJSON(res, 401, {
+          success: false,
+          code: 'INVALID_CREDENTIALS',
+          message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.'
+        });
         return;
       }
 
@@ -456,12 +490,18 @@ async function handleHttpRequest(req, res) {
         : auth.verifyPassword(password, user.salt, user.passwordHash);
       if (!ok) {
         const fail = auth.recordLoginFailure(ip);
-        sendJSON(res, 401, { success: false, message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.' });
+        sendJSON(res, 401, {
+          success: false,
+          code: 'INVALID_CREDENTIALS',
+          message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.'
+        });
         return;
       }
 
       auth.recordLoginSuccess(ip);
-      const token = auth.createSession(user.username);
+      const token = typeof auth.createSessionPersisted === 'function'
+        ? await auth.createSessionPersisted(user.username)
+        : auth.createSession(user.username);
       sendJSON(res, 200, {
         success: true,
         token,

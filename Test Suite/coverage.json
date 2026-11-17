@@ -1,0 +1,12 @@
+{
+  "all": true,
+  "include": ["src/**/*.js", "public/js/**/*.js"],
+  "exclude": ["public/js/*.min.js"],
+  "reporter": ["text", "html", "json", "json-summary", "lcov"],
+  "reports-dir": "Test Suite/reports/coverage",
+  "temp-directory": "Test Suite/reports/tmp",
+  "lines": 80,
+  "statements": 80,
+  "functions": 80,
+  "branches": 80
+}

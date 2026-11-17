@@ -24,13 +24,13 @@ function loadImporter({ withLibs = false } = {}) {
   context.global = context;
 
   if (withLibs) {
-    const xlsxPath = path.resolve(__dirname, '../public/js/xlsx.full.min.js');
+    const xlsxPath = path.resolve(__dirname, '../../public/js/xlsx.full.min.js');
     vm.runInNewContext(fs.readFileSync(xlsxPath, 'utf8'), context, { filename: xlsxPath });
-    const mammothPath = path.resolve(__dirname, '../public/js/mammoth.browser.min.js');
+    const mammothPath = path.resolve(__dirname, '../../public/js/mammoth.browser.min.js');
     vm.runInNewContext(fs.readFileSync(mammothPath, 'utf8'), context, { filename: mammothPath });
   }
 
-  const importerPath = path.resolve(__dirname, '../public/js/exam-importer.js');
+  const importerPath = path.resolve(__dirname, '../../public/js/exam-importer.js');
   vm.runInNewContext(fs.readFileSync(importerPath, 'utf8'), context, { filename: importerPath });
   return context.ExamImporter;
 }
@@ -67,7 +67,7 @@ test('parseVnText extracts title and subject metadata from header lines', () => 
 
 test('parseVnText parses sample Mau_De_Thi_Aiken.txt completely', () => {
   const ExamImporter = loadImporter();
-  const txt = fs.readFileSync(path.resolve(__dirname, '../public/samples/Mau_De_Thi_Aiken.txt'), 'utf8');
+  const txt = fs.readFileSync(path.resolve(__dirname, '../../public/samples/Mau_De_Thi_Aiken.txt'), 'utf8');
   const res = ExamImporter.parseVnText(txt);
   assert.equal(res.questions.length, 5);
   assert.deepEqual(plain(res.questions.map(q => q.correct)), [1, 0, 2, 3, 1]);
@@ -187,11 +187,11 @@ test('parseExcelRows rejects insufficient rows and handles multi-choice answers'
 
 test('parseFile parses real sample .xlsx and .docx files cleanly', async () => {
   const ExamImporter = loadImporter({ withLibs: true });
-  const xlsxBuf = fs.readFileSync(path.resolve(__dirname, '../public/samples/Mau_De_Thi_Mini_Quiz.xlsx'));
+  const xlsxBuf = fs.readFileSync(path.resolve(__dirname, '../../public/samples/Mau_De_Thi_Mini_Quiz.xlsx'));
   const xlsxRes = await ExamImporter.parseFile(makeMockFile('Mau_De_Thi_Mini_Quiz.xlsx', xlsxBuf));
   assert.ok(xlsxRes.questions.length >= 1);
 
-  const docxBuf = fs.readFileSync(path.resolve(__dirname, '../public/samples/Mau_De_Thi_Word.docx'));
+  const docxBuf = fs.readFileSync(path.resolve(__dirname, '../../public/samples/Mau_De_Thi_Word.docx'));
   const docxRes = await ExamImporter.parseFile(makeMockFile('Mau_De_Thi_Word.docx', docxBuf));
   assert.ok(docxRes.questions.length >= 1);
 });

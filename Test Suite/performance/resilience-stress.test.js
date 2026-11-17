@@ -8,7 +8,7 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '../..');
 
 function loadModule(file, overrides = {}, tail = '', env = {}, clock = null) {
   const filename = path.join(ROOT, file);

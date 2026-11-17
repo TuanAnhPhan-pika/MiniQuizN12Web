@@ -20,7 +20,7 @@ function load(file, overrides = {}, tail = '', env = {}) {
 }
 
 test('ai/gemini helpers: question normalization, stats privacy compression, cache key & rate limit', () => {
-  const ai = require('../src/ai/gemini.js');
+  const ai = require('../../src/ai/gemini.js');
 
   const normalizedMixed = ai.normalizeGeneratedQuestions([
     { text: 'Thủ đô Việt Nam?', choices: ['A. Hà Nội', 'B) TP.HCM', 'C: Đà Nẵng', 'D - Huế'], correctIndices: [0] },

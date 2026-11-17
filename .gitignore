@@ -29,5 +29,7 @@ data/active_rooms.json
 # Test & scratch
 scratch/
 cookies.txt
+Test Suite/reports/
+Test Suite/evidence/
 *.ps1
 

@@ -225,21 +225,16 @@ async function updateUser(username, patch) {
 }
 
 // ── Sessions ──
-async function saveSession(token, username, expiresAt) {
-  const now = Date.now();
+async function saveSession(token, username, expiresAt, createdAt = Date.now()) {
   if (useSupabase()) {
-    try {
-      await supabase.from('user_sessions').upsert({ token, username, created_at: now, expires_at: expiresAt });
-      return;
-    } catch (e) {}
+    await supabase.from('user_sessions').upsert({ token, username, created_at: createdAt, expires_at: expiresAt });
+    return;
   }
-  try {
-    await pg.query(
-      `INSERT INTO user_sessions (token, username, created_at, expires_at)
-       VALUES ($1, $2, $3, $4) ON CONFLICT (token) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
-      [token, username, now, expiresAt]
-    );
-  } catch (e) {}
+  await pg.query(
+    `INSERT INTO user_sessions (token, username, created_at, expires_at)
+     VALUES ($1, $2, $3, $4) ON CONFLICT (token) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+    [token, username, createdAt, expiresAt]
+  );
 }
 
 async function getSession(token) {

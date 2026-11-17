@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 const plain = v => JSON.parse(JSON.stringify(v));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '../..');
 
 function makeStorageArea() {
   const store = new Map();
