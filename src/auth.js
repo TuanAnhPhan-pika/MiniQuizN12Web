@@ -15,12 +15,27 @@ const LOGIN_WINDOW_MS = DAY_MS;       // cửa sổ đếm lỗi reset sau 1 ng�
 
 const REGISTER_LIMIT = 50;            // tối đa 50 tài khoản / giờ
 const REGISTER_WINDOW_MS = 60 * 60 * 1000; // mỗi giờ / IP
+const MAX_TRACKED_IPS = 5000;
+const MAX_MEMORY_SESSIONS = 10000;
 
 // In-memory cache synced with PostgreSQL
 const memoryUsers = new Map(); // username_lower -> user
 const memorySessions = new Map(); // token -> session
 const loginAttempts = new Map(); // ip -> attempt object
 const registerAttempts = new Map(); // ip -> [timestamp]
+
+function pruneIpMap(map, isExpired, maxEntries = MAX_TRACKED_IPS) {
+  for (const [k, v] of map.entries()) {
+    if (isExpired(v)) {
+      map.delete(k);
+    }
+  }
+  while (map.size >= maxEntries) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) break;
+    map.delete(oldestKey);
+  }
+}
 
 // ── Khởi tạo nạp dữ liệu từ Database (Supabase / PostgreSQL) ──
 let isInitialized = false;
@@ -114,11 +129,21 @@ async function initAuth() {
   }
 }
 
-// ── Password hashing (scrypt, stdlib) ──
+// ── Password hashing (scrypt, stdlib; async versions avoid blocking the event loop) ──
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return { salt, hash };
+}
+
+function hashPasswordAsync(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+      if (err) reject(err);
+      else resolve({ salt, hash: derivedKey.toString('hex') });
+    });
+  });
 }
 
 function verifyPassword(password, salt, expectedHashHex) {
@@ -126,6 +151,17 @@ function verifyPassword(password, salt, expectedHashHex) {
   const expected = Buffer.from(expectedHashHex, 'hex');
   if (hash.length !== expected.length) return false;
   return crypto.timingSafeEqual(hash, expected);
+}
+
+function verifyPasswordAsync(password, salt, expectedHashHex) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, hash) => {
+      if (err) { reject(err); return; }
+      const expected = Buffer.from(expectedHashHex, 'hex');
+      if (hash.length !== expected.length) resolve(false);
+      else resolve(crypto.timingSafeEqual(hash, expected));
+    });
+  });
 }
 
 // ── Users ──
@@ -178,7 +214,7 @@ function validatePassword(password) {
 }
 
 async function createUser({ username, displayName, password }) {
-  const { salt, hash } = hashPassword(password);
+  const { salt, hash } = await hashPasswordAsync(password);
   const user = await db.createUser({
     username,
     displayName,
@@ -211,6 +247,11 @@ function cooldownInfo(lastChangeAt, cooldownMs) {
 function createSession(username) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
+  if (memorySessions.size >= MAX_MEMORY_SESSIONS) {
+    for (const [tok, s] of memorySessions.entries()) {
+      if (now > s.expiresAt) memorySessions.delete(tok);
+    }
+  }
   const expiresAt = now + SESSION_TTL_MS;
   const sess = { username, createdAt: now, expiresAt };
   
@@ -261,7 +302,12 @@ function parseCookies(header) {
     if (idx < 0) return;
     const key = part.slice(0, idx).trim();
     const val = part.slice(idx + 1).trim();
-    if (key) out[key] = decodeURIComponent(val);
+    if (!key) return;
+    try {
+      out[key] = decodeURIComponent(val);
+    } catch {
+      out[key] = val;
+    }
   });
   return out;
 }
@@ -288,7 +334,10 @@ function checkLoginLock(ip) {
   const entry = loginAttempts.get(ip);
   if (!entry) return { locked: false };
   const now = Date.now();
-  if (now - entry.firstFailAt > LOGIN_WINDOW_MS) return { locked: false };
+  if (now - entry.firstFailAt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return { locked: false };
+  }
   if (entry.lockUntil && now < entry.lockUntil) {
     return { locked: true, waitSeconds: Math.ceil((entry.lockUntil - now) / 1000) };
   }
@@ -297,6 +346,9 @@ function checkLoginLock(ip) {
 
 function recordLoginFailure(ip) {
   const now = Date.now();
+  if (!loginAttempts.has(ip) && loginAttempts.size >= MAX_TRACKED_IPS) {
+    pruneIpMap(loginAttempts, e => (now - e.firstFailAt > LOGIN_WINDOW_MS) && (!e.lockUntil || now >= e.lockUntil));
+  }
   let entry = loginAttempts.get(ip);
   if (!entry || now - entry.firstFailAt > LOGIN_WINDOW_MS) {
     entry = { count: 0, firstFailAt: now, lockUntil: 0 };
@@ -328,8 +380,16 @@ function recordLoginSuccess(ip) {
 // ── Chống spam đăng ký (theo IP) ──
 function checkRegisterLimit(ip) {
   const now = Date.now();
-  const list = (registerAttempts.get(ip) || []).filter(t => now - t < REGISTER_WINDOW_MS);
-  registerAttempts.set(ip, list);
+  const prev = registerAttempts.get(ip);
+  if (!prev) return { allowed: true };
+  const list = prev.filter(t => now - t < REGISTER_WINDOW_MS);
+  if (list.length === 0) {
+    registerAttempts.delete(ip);
+    return { allowed: true };
+  }
+  if (list.length !== prev.length) {
+    registerAttempts.set(ip, list);
+  }
   if (list.length >= REGISTER_LIMIT) {
     return { allowed: false, retryAt: list[0] + REGISTER_WINDOW_MS };
   }
@@ -338,6 +398,9 @@ function checkRegisterLimit(ip) {
 
 function recordRegister(ip) {
   const now = Date.now();
+  if (!registerAttempts.has(ip) && registerAttempts.size >= MAX_TRACKED_IPS) {
+    pruneIpMap(registerAttempts, tsList => !Array.isArray(tsList) || tsList.every(t => now - t >= REGISTER_WINDOW_MS));
+  }
   const list = (registerAttempts.get(ip) || []).filter(t => now - t < REGISTER_WINDOW_MS);
   list.push(now);
   registerAttempts.set(ip, list);
@@ -369,7 +432,9 @@ module.exports = {
   NAME_CHANGE_COOLDOWN_MS,
   PASSWORD_CHANGE_COOLDOWN_MS,
   hashPassword,
+  hashPasswordAsync,
   verifyPassword,
+  verifyPasswordAsync,
   findUserByUsername,
   findUserByUsernameSync,
   createUser,
@@ -392,4 +457,9 @@ module.exports = {
   recordLoginSuccess,
   checkRegisterLimit,
   recordRegister,
+  getSecurityMapStats: () => ({
+    loginAttempts: loginAttempts.size,
+    registerAttempts: registerAttempts.size,
+    sessions: memorySessions.size,
+  }),
 };

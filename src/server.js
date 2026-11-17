@@ -113,25 +113,62 @@ const MIME = {
   '.txt':  'text/plain;charset=utf-8',
 };
 
-// Đọc JSON body từ request
+// Đọc JSON body từ request (giới hạn 2MB UTF-8 bytes, phân biệt 400 / 413 rõ ràng)
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
     req.on('data', chunk => {
-      body += chunk.toString();
-      if (body.length > 2e6) { // 2MB limit
-        req.destroy();
-        reject(new Error('Payload too large'));
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buf.length;
+      if (totalBytes > 2e6) { // 2MB limit
+        settled = true;
+        if (typeof req.pause === 'function') req.pause();
+        const err = new Error('Payload too large');
+        err.status = 413;
+        err.code = 'PAYLOAD_TOO_LARGE';
+        reject(err);
+        return;
       }
+      chunks.push(buf);
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (err) {
-        reject(err);
+        const raw = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : '';
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (_err) {
+        const parseErr = new Error('Dữ liệu JSON không hợp lệ.');
+        parseErr.status = 400;
+        parseErr.code = 'INVALID_JSON';
+        reject(parseErr);
       }
     });
-    req.on('error', reject);
+    req.on('aborted', () => {
+      const abortErr = new Error('Kết nối gửi dữ liệu bị ngắt giữa chừng.');
+      abortErr.status = 400;
+      abortErr.code = 'REQUEST_ABORTED';
+      fail(abortErr);
+    });
+    req.on('close', () => {
+      if (!settled && !req.complete) {
+        const closeErr = new Error('Kết nối đã đóng trước khi truyền xong dữ liệu.');
+        closeErr.status = 400;
+        closeErr.code = 'REQUEST_ABORTED';
+        fail(closeErr);
+      }
+    });
+    req.on('error', err => fail(err));
   });
 }
 
@@ -250,7 +287,36 @@ function sendJSON(res, status, obj, extraHeaders) {
   res.end(JSON.stringify(obj));
 }
 
-const server = http.createServer(async (req, res) => {
+function sendRequestError(res, err) {
+  if (!res || res.writableEnded || res.destroyed) return;
+  const status = (err && (err.status === 400 || err.status === 408 || err.status === 413)) ? err.status : 500;
+  const headers = status === 413 ? { Connection: 'close' } : undefined;
+  if (!res.headersSent) {
+    sendJSON(res, status, { success: false, message: err?.message || 'Lỗi máy chủ nội bộ.' }, headers);
+    if (status === 413 && res.socket && !res.socket.destroyed) {
+      res.once('finish', () => { try { res.socket.destroy(); } catch {} });
+    }
+  } else {
+    try { res.end(); } catch {}
+  }
+}
+
+const hostRoomCreateLocks = new Map();
+function withHostRoomCreateLock(hostUsername, fn) {
+  const key = String(hostUsername || 'admin').toLowerCase();
+  const prev = hostRoomCreateLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  hostRoomCreateLocks.set(key, tail);
+  tail.then(() => {
+    if (hostRoomCreateLocks.get(key) === tail) {
+      hostRoomCreateLocks.delete(key);
+    }
+  });
+  return run;
+}
+
+async function handleHttpRequest(req, res) {
   const proto = getRequestProto(req);
   const host = getRequestHost(req);
   const isSecure = proto === 'https';
@@ -360,7 +426,7 @@ const server = http.createServer(async (req, res) => {
       }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -385,7 +451,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const ok = auth.verifyPassword(password, user.salt, user.passwordHash);
+      const ok = typeof auth.verifyPasswordAsync === 'function'
+        ? await auth.verifyPasswordAsync(password, user.salt, user.passwordHash)
+        : auth.verifyPassword(password, user.salt, user.passwordHash);
       if (!ok) {
         const fail = auth.recordLoginFailure(ip);
         sendJSON(res, 401, { success: false, message: fail.warning || 'Tài khoản hoặc mật khẩu không chính xác.' });
@@ -408,7 +476,7 @@ const server = http.createServer(async (req, res) => {
       }, { 'Set-Cookie': auth.sessionCookieHeader(token, isSecure) });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -499,7 +567,10 @@ const server = http.createServer(async (req, res) => {
           sendJSON(res, 400, { success: false, message: 'Vui lòng nhập mật khẩu hiện tại để đổi mật khẩu.' });
           return;
         }
-        if (!auth.verifyPassword(currentPassword, user.salt, user.passwordHash)) {
+        const currentOk = typeof auth.verifyPasswordAsync === 'function'
+          ? await auth.verifyPasswordAsync(currentPassword, user.salt, user.passwordHash)
+          : auth.verifyPassword(currentPassword, user.salt, user.passwordHash);
+        if (!currentOk) {
           sendJSON(res, 400, { success: false, message: 'Mật khẩu hiện tại không chính xác.' });
           return;
         }
@@ -515,7 +586,9 @@ const server = http.createServer(async (req, res) => {
           sendJSON(res, 429, { success: false, message: `Bạn chỉ có thể đổi mật khẩu 1 lần mỗi 7 ngày. Vui lòng quay lại sau ${daysLeft} ngày.` });
           return;
         }
-        const { salt, hash } = auth.hashPassword(newPassword);
+        const { salt, hash } = typeof auth.hashPasswordAsync === 'function'
+          ? await auth.hashPasswordAsync(newPassword)
+          : auth.hashPassword(newPassword);
         patch.salt = salt;
         patch.passwordHash = hash;
         patch.lastPasswordChangeAt = now;
@@ -540,7 +613,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -561,7 +634,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, history });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -901,7 +974,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, historyItem: saved });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -918,7 +991,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, rooms });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -951,7 +1024,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, record: archiveResult ? archiveResult.stats : null });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -972,7 +1045,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, exams: sortExamsByCode(exams) });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -995,7 +1068,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, exam: saved });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1013,7 +1086,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: deleted });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1025,7 +1098,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, exams: sortExamsByCode(exams) });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1100,7 +1173,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true, ...check });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1164,7 +1237,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1186,7 +1259,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, { success: true });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1231,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1277,57 +1350,62 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const cleanReqPin = body.pin && /^\d{3}-\d{3}$/.test(String(body.pin).trim())
-        ? String(body.pin).trim()
-        : '';
-      const existingReqRoom = cleanReqPin ? roomsManager.getRawRoom(cleanReqPin) : null;
-      const isUpdatingOwnRoom = existingReqRoom && existingReqRoom.hostUsername === String(hostUsername || 'admin').toLowerCase();
-      if (!isUpdatingOwnRoom && typeof roomsManager.countActiveRoomsByHost === 'function') {
-        const limit = roomsManager.MAX_ROOMS_PER_HOST || 3;
-        if (roomsManager.countActiveRoomsByHost(hostUsername) >= limit) {
-          sendJSON(res, 409, { success: false, message: 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn' });
-          return;
+      const createdPayload = await withHostRoomCreateLock(hostUsername, async () => {
+        const cleanReqPin = body.pin && /^\d{3}-\d{3}$/.test(String(body.pin).trim())
+          ? String(body.pin).trim()
+          : '';
+        const existingReqRoom = cleanReqPin ? roomsManager.getRawRoom(cleanReqPin) : null;
+        const isUpdatingOwnRoom = existingReqRoom && existingReqRoom.hostUsername === String(hostUsername || 'admin').toLowerCase();
+        if (!isUpdatingOwnRoom && typeof roomsManager.countActiveRoomsByHost === 'function') {
+          const limit = roomsManager.MAX_ROOMS_PER_HOST || 3;
+          if (roomsManager.countActiveRoomsByHost(hostUsername) >= limit) {
+            sendJSON(res, 409, { success: false, message: 'Số phòng bạn có thể giữ chỗ đã đạt giới hạn' });
+            return null;
+          }
         }
-      }
 
-      let exam = body.exam || {};
-      if (!exam.questions && body.questions && Array.isArray(body.questions)) {
-        exam = {
-          id: body.examId || 'custom',
-          title: body.title || body.name || 'Bài thi trắc nghiệm',
-          questions: body.questions,
-          timePerQ: body.timePerQ || 15
-        };
-      } else if (body.examId && (!exam.questions || exam.questions.length === 0)) {
-        const found = await db.getQuizById(body.examId, { includeCorrect: true, requestingUser: sessionUser });
-        if (found) {
-          exam = found;
-        } else if (body.questions && Array.isArray(body.questions) && body.questions.length > 0) {
+        let exam = body.exam || {};
+        if (!exam.questions && body.questions && Array.isArray(body.questions)) {
           exam = {
-            id: body.examId,
+            id: body.examId || 'custom',
             title: body.title || body.name || 'Bài thi trắc nghiệm',
             questions: body.questions,
             timePerQ: body.timePerQ || 15
           };
-        } else {
-          sendJSON(res, 403, { success: false, message: 'Không tìm thấy đề thi hoặc bạn không có quyền sử dụng đề thi này!' });
-          return;
+        } else if (body.examId && (!exam.questions || exam.questions.length === 0)) {
+          const found = await db.getQuizById(body.examId, { includeCorrect: true, requestingUser: sessionUser });
+          if (found) {
+            exam = found;
+          } else if (body.questions && Array.isArray(body.questions) && body.questions.length > 0) {
+            exam = {
+              id: body.examId,
+              title: body.title || body.name || 'Bài thi trắc nghiệm',
+              questions: body.questions,
+              timePerQ: body.timePerQ || 15
+            };
+          } else {
+            sendJSON(res, 403, { success: false, message: 'Không tìm thấy đề thi hoặc bạn không có quyền sử dụng đề thi này!' });
+            return null;
+          }
         }
-      }
 
-      const room = await roomsManager.createRoom({
-        pin: body.pin,
-        hostUsername,
-        exam,
-        capacity: Number(body.capacity) || 40,
-        isLocked: !!body.isLocked,
-        title: roomTitle
+        const room = await roomsManager.createRoom({
+          pin: body.pin,
+          hostUsername,
+          exam,
+          capacity: Number(body.capacity) || 40,
+          isLocked: !!body.isLocked,
+          title: roomTitle
+        });
+
+        return { success: true, room: roomsManager.getRoomForClient(room.pin, true), pin: room.pin };
       });
 
-      sendJSON(res, 200, { success: true, room: roomsManager.getRoomForClient(room.pin, true), pin: room.pin });
+      if (!createdPayload) return;
+      sendJSON(res, 200, createdPayload);
       return;
     } catch (err) {
-      sendJSON(res, 500, { success: false, message: err.message });
+      sendRequestError(res, err);
       return;
     }
   }
@@ -1848,7 +1926,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
     } catch (err) {
-      sendJSON(res, 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
+      sendJSON(res, (err && err.status === 413) ? 413 : 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
       return;
     }
   }
@@ -2027,7 +2105,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
     } catch (err) {
-      sendJSON(res, 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
+      sendJSON(res, (err && err.status === 413) ? 413 : 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
       return;
     }
   }
@@ -2108,8 +2186,24 @@ window.__SERVER_PUBLIC_URL__ = "${publicUrl}";
     'Content-Type': MIME[ext] || 'application/octet-stream',
     'Cache-Control': 'no-cache'
   });
-  fs.createReadStream(fp).pipe(res);
+  const stream = fs.createReadStream(fp);
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(404, { 'Content-Type': 'text/plain;charset=utf-8' });
+      res.end('Not found');
+    } else if (!res.destroyed) {
+      res.destroy();
+    }
+  });
+  stream.pipe(res);
+}
+
+const server = http.createServer((req, res) => {
+  handleHttpRequest(req, res).catch(err => sendRequestError(res, err));
 });
+server.requestTimeout = 45000;
+server.headersTimeout = 15000;
+server.keepAliveTimeout = 10000;
 
 // Khởi chạy server và nạp cấu trúc Database
 async function startServer() {
@@ -2131,7 +2225,7 @@ async function startServer() {
     }
   }
 
-  server.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', 1024, () => {
     const lanIp = getServerLanIp();
     const publicUrl = process.env.APP_URL || DEFAULT_APP_URL;
     console.log(`Mini Quiz Classroom server running at:`);

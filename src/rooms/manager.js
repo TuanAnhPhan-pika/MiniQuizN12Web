@@ -72,18 +72,23 @@ function cleanupExpiredRooms() {
 }
 
 // Chạy dọn dẹp phòng hết hạn mỗi 10 phút
-setInterval(cleanupExpiredRooms, 10 * 60 * 1000);
+const cleanupTimer = setInterval(cleanupExpiredRooms, 10 * 60 * 1000);
+if (cleanupTimer && typeof cleanupTimer.unref === 'function') cleanupTimer.unref();
 
 async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40, isLocked = false, title = '' }) {
   cleanupExpiredRooms();
   let pin = '';
+  let replacedRoom = null;
   // Nếu host gửi mã PIN cũ (ví dụ khi reload trang hoặc khôi phục phòng của chính mình)
   if (requestedPin && /^\d{3}-\d{3}$/.test(String(requestedPin).trim())) {
     const cleanReqPin = String(requestedPin).trim();
     const existing = activeRooms.get(cleanReqPin);
     if (!existing || existing.hostUsername === String(hostUsername || 'admin').toLowerCase()) {
       pin = cleanReqPin;
-      if (existing) activeRooms.delete(cleanReqPin);
+      if (existing) {
+        replacedRoom = existing;
+        activeRooms.delete(cleanReqPin);
+      }
     }
   }
 
@@ -138,10 +143,19 @@ async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40
     answers: {}, // qIdx -> { [playerId]: record }
   };
 
-  if (db && typeof db.createWaitingGameSession === 'function') {
-    await db.createWaitingGameSession(room);
-  }
+  // Reserve PIN synchronously before awaiting DB so concurrent calls see this slot and PIN immediately
   activeRooms.set(pin, room);
+  if (db && typeof db.createWaitingGameSession === 'function') {
+    try {
+      await db.createWaitingGameSession(room);
+    } catch (err) {
+      if (activeRooms.get(pin) === room) {
+        if (replacedRoom) activeRooms.set(pin, replacedRoom);
+        else activeRooms.delete(pin);
+      }
+      throw err;
+    }
+  }
   return room;
 }
 

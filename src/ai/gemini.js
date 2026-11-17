@@ -5,6 +5,7 @@ const RATE_LIMIT_PER_MIN = 6;
 const RATE_LIMIT_PER_HOUR = 40;
 const MEMORY_CACHE_MAX = 100;
 const MEMORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_RATE_BUCKETS = 5000;
 
 const userRateBuckets = new Map();
 const weaknessMemoryCache = new Map();
@@ -53,11 +54,31 @@ async function getGenAIClient() {
   return { ai: cachedClient, sdk };
 }
 
+function pruneRateBuckets(oneHourAgo) {
+  for (const [bucketKey, timestamps] of userRateBuckets.entries()) {
+    const active = timestamps.filter(ts => ts > oneHourAgo);
+    if (active.length === 0) {
+      userRateBuckets.delete(bucketKey);
+    } else if (active.length !== timestamps.length) {
+      userRateBuckets.set(bucketKey, active);
+    }
+  }
+  while (userRateBuckets.size >= MAX_RATE_BUCKETS) {
+    const oldestKey = userRateBuckets.keys().next().value;
+    if (oldestKey === undefined) break;
+    userRateBuckets.delete(oldestKey);
+  }
+}
+
 function checkAiRateLimit(userKey, ip = '') {
   const key = `${String(userKey || 'anon').toLowerCase()}::${String(ip || 'local')}`;
   const now = Date.now();
   const oneMinAgo = now - 60 * 1000;
   const oneHourAgo = now - 60 * 60 * 1000;
+
+  if (!userRateBuckets.has(key) && userRateBuckets.size >= MAX_RATE_BUCKETS) {
+    pruneRateBuckets(oneHourAgo);
+  }
 
   const existing = (userRateBuckets.get(key) || []).filter(ts => ts > oneHourAgo);
   const lastMin = existing.filter(ts => ts > oneMinAgo);
@@ -496,4 +517,5 @@ module.exports = {
   generateQuestions,
   analyzeClassWeakness,
   setGenAIClientFactoryForTest,
+  getRateLimitBucketCount: () => userRateBuckets.size,
 };
