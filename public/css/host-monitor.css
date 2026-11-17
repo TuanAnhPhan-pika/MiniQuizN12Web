@@ -1021,3 +1021,198 @@ body.dark .dot-wrong {
   background: #0369a1;
   transform: translateY(-2px);
 }
+
+/* ── AI CLASS WEAKNESS SUMMARY CARD (HOST MONITOR & DASHBOARD MODAL) ── */
+.ai-weakness-card {
+  background: #f8fafc;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 14px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-weakness-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-weakness-title {
+  font-size: 1.08rem;
+  font-weight: 850;
+  color: #0f172a;
+}
+
+.btn-ai-weakness {
+  background: #0284c7;
+  color: #ffffff;
+  border: 1.5px solid #0369a1;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .16s ease, opacity .16s ease;
+}
+
+.btn-ai-weakness:hover:not(:disabled) {
+  background: #0369a1;
+}
+
+.btn-ai-weakness:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.ai-weakness-empty,
+.ai-weakness-loading {
+  font-size: 0.9rem;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.ai-weakness-error {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.ai-weakness-result {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 12px;
+}
+
+.ai-sub-label {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #0369a1;
+  margin-bottom: 4px;
+}
+
+.ai-summary-text {
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.ai-weakness-columns {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 16px;
+}
+
+.ai-weak-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-weak-item {
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 8px;
+}
+
+.ai-weak-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.ai-weak-item-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-weak-qtitle {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.ai-weak-pct {
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ai-weak-pct.tone-low { color: #b91c1c; }
+.ai-weak-pct.tone-mid { color: #b45309; }
+.ai-weak-pct.tone-ok  { color: #15803d; }
+
+.ai-weak-mistake {
+  font-size: 0.86rem;
+  color: #475569;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.ai-actions-list {
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: #1e293b;
+}
+
+body.dark .ai-weakness-card {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+body.dark .ai-weakness-title,
+body.dark .ai-summary-text,
+body.dark .ai-weak-qtitle,
+body.dark .ai-actions-list {
+  color: #f1f5f9;
+}
+
+body.dark .ai-weakness-empty,
+body.dark .ai-weakness-loading,
+body.dark .ai-weak-mistake {
+  color: #94a3b8;
+}
+
+body.dark .ai-weakness-result,
+body.dark .ai-weak-item {
+  border-color: #1e293b;
+}
+
+body.dark .ai-sub-label {
+  color: #38bdf8;
+}
+
+body.dark .ai-weak-pct.tone-low { color: #fca5a5; }
+body.dark .ai-weak-pct.tone-mid { color: #fcd34d; }
+body.dark .ai-weak-pct.tone-ok  { color: #86efac; }
+
+body.dark .ai-weakness-error {
+  background: rgba(185, 28, 28, 0.25);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+}
+
+@media (max-width: 768px) {
+  .ai-weakness-columns {
+    grid-template-columns: 1fr;
+  }
+}
+

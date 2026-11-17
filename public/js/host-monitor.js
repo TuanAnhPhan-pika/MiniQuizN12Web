@@ -55,10 +55,27 @@
   let currentQ = 0;
   let timerInterval = null;
   let ticksElapsed = 0;
+  let timeUpHandled = false;
   let qStatsInterval = null;
   let lbCountdownInterval = null;
   let lbAutoNextTimeout = null;
   let currentRoom = null;
+  let latestExamStats = null;
+
+  function getQuestionCorrectList(q) {
+    if (!q) return [];
+    const maxLen = Array.isArray(q.choices) ? q.choices.length : 10;
+    if (Array.isArray(q.correctChoices) && q.correctChoices.length > 0) {
+      const uniq = Array.from(new Set(
+        q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen)
+      )).sort((a, b) => a - b);
+      if (uniq.length > 0) return uniq;
+    }
+    if (typeof q.correct === 'number' && Number.isInteger(q.correct) && q.correct >= 0 && q.correct < maxLen) {
+      return [q.correct];
+    }
+    return [];
+  }
 
   /* Helper Escape HTML */
   function escapeHtml(str) {
@@ -140,6 +157,7 @@
   function loadQuestion(idx) {
     currentQ = idx;
     ticksElapsed = 0;
+    timeUpHandled = false;
 
     if (lbCountdownInterval) clearInterval(lbCountdownInterval);
     if (lbAutoNextTimeout) clearTimeout(lbAutoNextTimeout);
@@ -153,9 +171,12 @@
       }).catch(() => {});
     }
 
-    const q = QUESTIONS[idx];
-    document.getElementById('q-counter').textContent = `Câu ${idx + 1} / ${QUESTIONS.length}`;
-    document.getElementById('q-text').textContent = q.text;
+    const q = QUESTIONS[idx] || {};
+    const correctList = getQuestionCorrectList(q);
+    const isMulti = Boolean(q.isMultiple || correctList.length > 1);
+    const qSecs = Number(q.timeLimit) || TIMER_SECS || 15;
+    document.getElementById('q-counter').textContent = `Câu ${idx + 1} / ${QUESTIONS.length}` + (isMulti ? ' • Nhiều đáp án' : '');
+    document.getElementById('q-text').textContent = q.text || '';
 
     // Render danh sách lựa chọn lớn (chưa lộ đáp án đúng)
     const grid = document.getElementById('choices-grid');
@@ -179,44 +200,48 @@
     document.getElementById('final-stats-panel').classList.remove('show');
 
     // Khởi động thanh thời gian đếm ngược
-    startMonitorTimer();
+    startMonitorTimer(qSecs);
 
     // Bắt đầu theo dõi số lượng thí sinh chọn đáp án realtime
     startLiveStatsTracking(idx);
   }
 
   /* ── 3. THANH THỜI GIAN ĐẾM NGƯỢC ── */
-  function resetTimerBar() {
+  function resetTimerBar(qSecs) {
+    const limitSecs = qSecs || TIMER_SECS || 15;
     const bar = document.getElementById('timer-bar');
     const secs = document.getElementById('timer-secs');
     bar.style.transition = 'none';
     bar.style.width = '100%';
     bar.classList.remove('warning', 'danger');
-    secs.textContent = TIMER_SECS;
+    secs.textContent = limitSecs;
     void bar.offsetWidth;
     bar.style.transition = 'width 0.5s linear, background 0.5s';
   }
 
-  function startMonitorTimer() {
+  function startMonitorTimer(qSecs) {
+    const limitSecs = qSecs || TIMER_SECS || 15;
     clearInterval(timerInterval);
-    resetTimerBar();
+    resetTimerBar(limitSecs);
 
     timerInterval = setInterval(() => {
       ticksElapsed++;
-      const secsLeft = Math.max(0, TIMER_SECS - ticksElapsed * (TICK_MS / 1000));
-      updateTimerUI(secsLeft);
+      const secsLeft = Math.max(0, limitSecs - ticksElapsed * (TICK_MS / 1000));
+      updateTimerUI(secsLeft, limitSecs);
 
-      if (ticksElapsed >= TIMER_SECS * (1000 / TICK_MS)) {
+      if (ticksElapsed >= limitSecs * (1000 / TICK_MS)) {
         clearInterval(timerInterval);
-        handleTimeUp();
+        timerInterval = null;
+        handleTimeUp(false);
       }
     }, TICK_MS);
   }
 
-  function updateTimerUI(secsLeft) {
+  function updateTimerUI(secsLeft, qSecs) {
+    const limitSecs = qSecs || TIMER_SECS || 15;
     const bar = document.getElementById('timer-bar');
     const secs = document.getElementById('timer-secs');
-    const pct = (secsLeft / TIMER_SECS) * 100;
+    const pct = (secsLeft / limitSecs) * 100;
     bar.style.width = pct + '%';
     secs.textContent = Math.ceil(secsLeft);
     bar.classList.remove('warning', 'danger');
@@ -246,7 +271,7 @@
                 clearInterval(qStatsInterval);
                 qStatsInterval = null;
               }
-              handleTimeUp();
+              handleTimeUp(true);
             }
           }
         }
@@ -273,7 +298,10 @@
   }
 
   /* ── 5. KHI HẾT GIỜ / TOÀN BỘ ĐÃ TRẢ LỜI: LỘ ĐÁP ÁN ĐÚNG SAU ĐÓ HIỆN BXH ── */
-  function handleTimeUp() {
+  function handleTimeUp(earlyAllAnswered = false) {
+    if (timeUpHandled) return;
+    timeUpHandled = true;
+
     if (qStatsInterval) {
       clearInterval(qStatsInterval);
       qStatsInterval = null;
@@ -283,23 +311,26 @@
       timerInterval = null;
     }
 
-    const q = QUESTIONS[currentQ];
-    const correctIdx = q.correct;
+    const q = QUESTIONS[currentQ] || {};
+    const correctIndices = getQuestionCorrectList(q);
 
-    // Lộ đáp án đúng sau khi hết giờ hoặc toàn bộ thí sinh đã trả lời
-    const correctEl = document.getElementById(`choice-item-${correctIdx}`);
-    if (correctEl) {
-      correctEl.classList.add('reveal-correct');
-      const badge = document.getElementById(`choice-badge-${correctIdx}`);
-      if (badge) {
-        badge.innerHTML = `✓ Đáp án đúng (${badge.textContent.trim()})`;
+    // Lộ tất cả đáp án đúng sau khi hết giờ hoặc toàn bộ thí sinh đã trả lời
+    correctIndices.forEach(cIdx => {
+      const correctEl = document.getElementById(`choice-item-${cIdx}`);
+      if (correctEl) {
+        correctEl.classList.add('reveal-correct');
+        const badge = document.getElementById(`choice-badge-${cIdx}`);
+        if (badge) {
+          badge.innerHTML = `✓ Đáp án đúng (${badge.textContent.trim()})`;
+        }
       }
-    }
+    });
 
-    // Sau 1.5s nhìn đáp án chính xác thì hiển thị Bảng xếp hạng
+    // Chờ 2.1s khi hết giờ (giữ room.phase='question' qua cửa sổ ân hạn 2s của server), hoặc 1.5s nếu tất cả đã trả lời xong
+    const revealDelayMs = earlyAllAnswered ? 1500 : 2100;
     setTimeout(() => {
       showLeaderboardPanel();
-    }, 1500);
+    }, revealDelayMs);
   }
 
   /* ── 6. BẢNG XẾP HẠNG HIỂN THỊ TRONG 4 GIÂY KÈM NÚT SANG CÂU TIẾP THEO ── */
@@ -473,6 +504,14 @@
   }
 
   function renderStatsUI(stats) {
+    latestExamStats = stats;
+    if (window.AiWeaknessUI) {
+      window.AiWeaknessUI.reset(
+        document.getElementById('hm-ai-weakness-body'),
+        document.getElementById('btn-hm-ai-weakness')
+      );
+    }
+
     // 1. 3 Thẻ số liệu tổng quan (chỉ giữ số liệu chính, loại bỏ dòng phụ)
     document.getElementById('stat-candidates').textContent = `${stats.totalCandidates} / ${stats.capacity}`;
     document.getElementById('stat-avg-score').textContent = `${stats.avgScore} / ${stats.maxPossibleScore}`;
@@ -551,9 +590,28 @@
   }
 
   function renderFallbackStats() {
+    latestExamStats = null;
+    if (window.AiWeaknessUI) {
+      window.AiWeaknessUI.reset(
+        document.getElementById('hm-ai-weakness-body'),
+        document.getElementById('btn-hm-ai-weakness')
+      );
+    }
     document.getElementById('stat-candidates').textContent = `0 / 40`;
     document.getElementById('stat-avg-score').textContent = `0 / ${QUESTIONS.length * 100}`;
     document.getElementById('stat-max-score').textContent = `0 / ${QUESTIONS.length * 100}`;
+  }
+
+  function handleAnalyzeWeaknessAI() {
+    if (!window.AiWeaknessUI) return;
+    window.AiWeaknessUI.analyze({
+      containerEl: document.getElementById('hm-ai-weakness-body'),
+      btnEl: document.getElementById('btn-hm-ai-weakness'),
+      pin: PIN,
+      sessionId: currentRoom?.sessionId || '',
+      roomTitle: currentRoom?.title || EXAM_TITLE,
+      stats: latestExamStats,
+    });
   }
 
   // Khởi chạy khi load trang

@@ -336,7 +336,7 @@
       <span>Xếp hạng: <strong>#${rank}/${totalPlayers}</strong></span>
     `;
 
-    const letters = ['A', 'B', 'C', 'D'];
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
     const detailsContainer = document.getElementById('hist-details-list');
     const details = item.details || item.answersDetail || [];
 
@@ -346,20 +346,29 @@
       detailsContainer.innerHTML = details.map((q, qIdx) => {
         const isCorrect = !!q.isCorrect;
         const earned = Math.round(q.earned || q.scoreAwarded || 0);
+        const userChoices = Array.isArray(q.userChoices) && q.userChoices.length > 0
+          ? q.userChoices.map(Number)
+          : (typeof q.userChoice === 'number' && q.userChoice >= 0 ? [q.userChoice] : []);
+        const correctChoices = Array.isArray(q.correctChoices) && q.correctChoices.length > 0
+          ? q.correctChoices.map(Number)
+          : (typeof q.correctChoice === 'number' && q.correctChoice >= 0 ? [q.correctChoice] : []);
+        const isMulti = Boolean(q.questionType === 'multiple' || correctChoices.length > 1);
+
         const badge = isCorrect 
           ? `<span class="detail-badge badge-corr">✓ Đúng (+${earned}đ)</span>`
-          : (q.userChoice === -1 
+          : (userChoices.length === 0
               ? `<span class="detail-badge badge-wrg">⏰ Hết giờ (0đ)</span>`
               : `<span class="detail-badge badge-wrg">✗ Sai (0đ)</span>`);
 
         const qTitle = q.questionText || q.text || `Câu ${qIdx + 1}`;
+        const multiTag = isMulti ? ' <span style="display:inline-block;margin-left:6px;padding:1px 6px;font-size:0.72rem;font-weight:700;border-radius:6px;background:#EDE7F6;color:#5E35B1;">Nhiều đáp án</span>' : '';
         const choices = Array.isArray(q.choices) ? q.choices : [];
 
         let choicesHtml = '';
         if (choices.length > 0) {
           choicesHtml = choices.map((c, cIdx) => {
-            const isUserPick = q.userChoice === cIdx;
-            const isCorrChoice = q.correctChoice === cIdx;
+            const isUserPick = userChoices.includes(cIdx);
+            const isCorrChoice = correctChoices.includes(cIdx);
             let pickClass = '';
             if (isUserPick && isCorrChoice) pickClass = 'user-pick is-correct';
             else if (isUserPick) pickClass = 'user-pick';
@@ -375,14 +384,16 @@
             </div>`;
           }).join('');
         } else {
-          const userChoiceText = q.userChoice >= 0 ? `Lựa chọn của bạn: Đáp án ${letters[q.userChoice] || (q.userChoice + 1)}` : 'Không trả lời (Hết giờ)';
+          const userChoiceText = userChoices.length > 0
+            ? `Lựa chọn của bạn: Đáp án ${userChoices.map(i => letters[i] || (i + 1)).join(', ')}`
+            : 'Không trả lời (Hết giờ)';
           choicesHtml = `<div class="detail-choice-row ${isCorrect ? 'is-correct' : 'user-pick'}">${userChoiceText}</div>`;
         }
 
         return `
           <div class="detail-q-card ${isCorrect ? 'q-correct' : 'q-wrong'}">
             <div class="detail-q-header">
-              <span class="detail-q-title"><strong>Câu ${qIdx + 1}:</strong> ${escapeHtml(qTitle)}</span>
+              <span class="detail-q-title"><strong>Câu ${qIdx + 1}:</strong> ${escapeHtml(qTitle)}${multiTag}</span>
               ${badge}
             </div>
             <div class="detail-choices">
@@ -402,13 +413,14 @@
 
   /* ── Lịch sử 20 phòng thi đã tổ chức gần nhất của User trong Dashboard ── */
   let hostedRoomsData = [];
+  let activeHostedRoomItem = null;
 
   async function loadHostedRoomsHistory() {
     try {
       const res = await fetch('/api/history/hosted', { credentials: 'same-origin' });
       if (res.ok) {
         const data = await res.json();
-        hostedRoomsData = data.hostedRooms || [];
+        hostedRoomsData = data.hostedRooms || data.rooms || [];
         renderHostedRoomsList(hostedRoomsData);
       }
     } catch (e) {
@@ -454,6 +466,14 @@
   function openHostedStatsModal(idx) {
     const item = hostedRoomsData[idx];
     if (!item) return;
+    activeHostedRoomItem = item;
+
+    if (window.AiWeaknessUI) {
+      window.AiWeaknessUI.reset(
+        document.getElementById('dash-ai-weakness-body'),
+        document.getElementById('btn-dash-ai-weakness')
+      );
+    }
 
     const stats = item.stats || {};
     const titleStr = item.roomTitle || ('Phòng thi PIN: ' + item.pin);
@@ -560,8 +580,21 @@
   }
 
   function closeHostedStatsModal() {
+    activeHostedRoomItem = null;
     const modal = document.getElementById('hosted-stats-modal');
     if (modal) modal.classList.remove('show');
+  }
+
+  function handleAnalyzeDashboardWeakness() {
+    if (!window.AiWeaknessUI || !activeHostedRoomItem) return;
+    window.AiWeaknessUI.analyze({
+      containerEl: document.getElementById('dash-ai-weakness-body'),
+      btnEl: document.getElementById('btn-dash-ai-weakness'),
+      sessionId: activeHostedRoomItem.id || '',
+      pin: activeHostedRoomItem.pin || '',
+      roomTitle: activeHostedRoomItem.roomTitle || ('Phòng thi PIN: ' + (activeHostedRoomItem.pin || '')),
+      stats: activeHostedRoomItem.stats || null,
+    });
   }
 
   function escapeHtml(str) {

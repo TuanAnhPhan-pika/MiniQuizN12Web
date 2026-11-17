@@ -6,11 +6,32 @@
 (function(root) {
   'use strict';
 
+  function parseAnswerIndices(rawStr, maxChoices) {
+    const limit = typeof maxChoices === 'number' && maxChoices > 0 ? maxChoices : 8;
+    const str = String(rawStr || '').trim();
+    if (!str) return [];
+    const letterMatches = str.toUpperCase().match(/[A-H]/g);
+    if (letterMatches && letterMatches.length > 0) {
+      return Array.from(new Set(
+        letterMatches.map(ch => ch.charCodeAt(0) - 65).filter(idx => idx >= 0 && idx < limit)
+      )).sort((a, b) => a - b);
+    }
+    const numTokens = str.split(/[\s,;+/&|\-]+/).filter(Boolean);
+    const numIndices = [];
+    numTokens.forEach(tok => {
+      if (/^\d+$/.test(tok)) {
+        const val = parseInt(tok, 10);
+        if (val >= 1 && val <= limit) numIndices.push(val - 1);
+      }
+    });
+    return Array.from(new Set(numIndices)).sort((a, b) => a - b);
+  }
+
   const ExamImporter = {
     /**
      * Phân tích văn bản tiếng Việt sang danh sách câu hỏi
      * @param {string} rawText
-     * @returns {{ title: string, subject: string, questions: Array<{text: string, choices: string[], correct: number}> }}
+     * @returns {{ title: string, subject: string, questions: Array<{text: string, choices: string[], correct: number, correctChoices: number[], isMultiple: boolean}> }}
      */
     parseVnText: function(rawText) {
       if (!rawText || !rawText.trim()) {
@@ -38,20 +59,20 @@
         }
       }
 
-      // 1. Kiểm tra xem có bảng đáp án ở cuối văn bản không (VD: BẢNG ĐÁP ÁN: 1.A 2.B 3.C hoặc 1-A 2-B)
+      // 1. Kiểm tra xem có bảng đáp án ở cuối văn bản không (VD: BẢNG ĐÁP ÁN: 1.A 2.B,C 3.AC)
       const answerKeyMap = {};
-      const answerKeyRegex = /(?:bảng\s+đáp\s+án|đáp\s+án\s+các\s+câu|key\s*đáp\s*án)[\s\S]*$/i;
+      const answerKeyLineRegex = /^\s*(?:bảng\s+đáp\s+án|đáp\s+án\s+(?:các\s+câu|đề\s+thi)|key\s*đáp\s*án|đáp\s+án\s*:?\s*$)/i;
+      const answerKeyRegex = /(?:^|\n)\s*(?:bảng\s+đáp\s+án|đáp\s+án\s+(?:các\s+câu|đề\s+thi)|key\s*đáp\s*án|đáp\s+án\s*:?\s*$)[\s\S]*$/im;
       const keyMatch = normalized.match(answerKeyRegex);
       if (keyMatch) {
         const keySection = keyMatch[0];
-        // Tìm các cặp số và chữ cái đáp án: 1.A, 1-A, 1:A, 1A
-        const pairRegex = /(\d+)\s*[:.\-–]?\s*([A-Ha-h])/g;
+        // Tìm các cặp số và chữ cái đáp án: 1.A, 1-A, 1:A, 1. A, C, 1-AC
+        const pairRegex = /(\d+)\s*[:.\-–)]?\s*([A-Ha-h](?:\s*[,;/+&]\s*[A-Ha-h]|[A-Ha-h])*)/g;
         let pMatch;
         while ((pMatch = pairRegex.exec(keySection)) !== null) {
           const qNum = parseInt(pMatch[1], 10);
-          const ansLetter = pMatch[2].toUpperCase();
-          const letterIdx = ansLetter.charCodeAt(0) - 65; // A=0, B=1, C=2, D=3
-          answerKeyMap[qNum] = letterIdx;
+          const indices = parseAnswerIndices(pMatch[2], 8);
+          if (indices.length > 0) answerKeyMap[qNum] = indices;
         }
       }
 
@@ -67,18 +88,24 @@
         if (!currentQ) return;
         // Kiểm tra xem câu hỏi có đủ nội dung và lựa chọn không
         if (currentQ.choices.length >= 2 && currentQ.text.trim()) {
+          let corrList = Array.from(new Set(
+            (currentQ.correctChoices || []).filter(idx => idx >= 0 && idx < currentQ.choices.length)
+          )).sort((a, b) => a - b);
+
           // Nếu chưa có đáp án đúng, kiểm tra bảng đáp án ở cuối đề
-          if (currentQ.correct === -1 && currentQ.qNumber && typeof answerKeyMap[currentQ.qNumber] === 'number') {
-            currentQ.correct = answerKeyMap[currentQ.qNumber];
+          if (corrList.length === 0 && currentQ.qNumber && Array.isArray(answerKeyMap[currentQ.qNumber])) {
+            corrList = answerKeyMap[currentQ.qNumber].filter(idx => idx >= 0 && idx < currentQ.choices.length);
           }
-          // Nếu vẫn chưa có đáp án đúng, mặc định là 0 (A)
-          if (currentQ.correct === -1 || currentQ.correct >= currentQ.choices.length) {
-            currentQ.correct = 0;
+          // Nếu vẫn chưa có đáp án đúng, mặc định là [0] (A)
+          if (corrList.length === 0) {
+            corrList = [0];
           }
           parsedQuestions.push({
             text: currentQ.text.trim(),
             choices: currentQ.choices.map(c => c.trim()),
-            correct: currentQ.correct
+            correct: corrList[0],
+            correctChoices: corrList,
+            isMultiple: corrList.length > 1
           });
         }
         currentQ = null;
@@ -89,7 +116,7 @@
         if (!line) continue;
 
         // Bỏ qua phần bảng đáp án ở cuối văn bản khi đã tách câu hỏi
-        if (answerKeyRegex.test(line) && parsedQuestions.length > 0) {
+        if (answerKeyLineRegex.test(line) && (parsedQuestions.length > 0 || (currentQ && currentQ.choices.length >= 2))) {
           break;
         }
 
@@ -104,7 +131,7 @@
             qNumber: qNum,
             text: qText,
             choices: [],
-            correct: -1
+            correctChoices: []
           };
           continue;
         }
@@ -122,16 +149,18 @@
             qNumber: questionCounter,
             text: line,
             choices: [],
-            correct: -1
+            correctChoices: []
           };
           continue;
         }
 
-        // Kiểm tra xem dòng có phải là đáp án riêng: "Đáp án: A", "ANSWER: B", "Key: C", "Đ/a: D"
-        const ansMatch = line.match(/^\s*(?:đáp\s*án(?:\s*đúng)?|answer|key|đ\/a|da)\s*[:.\-–]?\s*([A-Ha-h])\b/i);
+        // Kiểm tra xem dòng có phải là đáp án riêng: "Đáp án: A", "Đáp án: A, C", "ANSWER: B, D", "Key: AC"
+        const ansMatch = line.match(/^\s*(?:đáp\s*án(?:\s*đúng)?|answer|key|đ\/a|da)\s*[:.\-–]?\s*([A-Ha-h](?:\s*[,;/+&]\s*[A-Ha-h]|[A-Ha-h])*)\b/i);
         if (ansMatch) {
-          const letter = ansMatch[1].toUpperCase();
-          currentQ.correct = letter.charCodeAt(0) - 65;
+          const indices = parseAnswerIndices(ansMatch[1], 8);
+          if (indices.length > 0) {
+            currentQ.correctChoices = indices;
+          }
           continue;
         }
 
@@ -161,8 +190,8 @@
           inlineMatches.forEach(item => {
             const cIdx = currentQ.choices.length;
             currentQ.choices.push(item.val);
-            if (item.isMarked) {
-              currentQ.correct = cIdx;
+            if (item.isMarked && !currentQ.correctChoices.includes(cIdx)) {
+              currentQ.correctChoices.push(cIdx);
             }
           });
           continue;
@@ -173,8 +202,8 @@
           const choiceVal = scMatch[3].trim();
           const cIdx = currentQ.choices.length;
           currentQ.choices.push(choiceVal);
-          if (isMarked) {
-            currentQ.correct = cIdx;
+          if (isMarked && !currentQ.correctChoices.includes(cIdx)) {
+            currentQ.correctChoices.push(cIdx);
           }
           continue;
         }
@@ -201,7 +230,7 @@
     /**
      * Phân tích tệp tải lên (Word, Excel, CSV, TXT, JSON)
      * @param {File} file
-     * @returns {Promise<{ title: string, subject: string, questions: Array<{text: string, choices: string[], correct: number}> }>}
+     * @returns {Promise<{ title: string, subject: string, questions: Array<{text: string, choices: string[], correct: number, correctChoices: number[], isMultiple: boolean}> }>}
      */
     parseFile: async function(file) {
       if (!file) throw new Error('Không có tệp nào được chọn!');
@@ -228,19 +257,26 @@
 
           // Chuẩn hóa câu hỏi
           const cleanQuestions = questions.map((q, idx) => {
-            let correct = typeof q.correct === 'number' ? q.correct : 0;
-            if (typeof q.correct === 'string') {
-              const upper = q.correct.trim().toUpperCase();
-              if (upper.length === 1 && upper >= 'A' && upper <= 'Z') {
-                correct = upper.charCodeAt(0) - 65;
-              } else {
-                correct = parseInt(q.correct, 10) || 0;
-              }
+            const choices = Array.isArray(q.choices) ? q.choices : (q.options || []);
+            let corrList = [];
+            if (Array.isArray(q.correctChoices) && q.correctChoices.length > 0) {
+              corrList = q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
+            } else if (Array.isArray(q.correct) && q.correct.length > 0) {
+              corrList = q.correct.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
+            } else if (typeof q.correct === 'number' && Number.isInteger(q.correct)) {
+              if (q.correct >= 0 && q.correct < choices.length) corrList = [q.correct];
+            } else if (typeof q.correct === 'string') {
+              corrList = parseAnswerIndices(q.correct, choices.length);
             }
+            corrList = Array.from(new Set(corrList)).sort((a, b) => a - b);
+            if (corrList.length === 0) corrList = [0];
+
             return {
               text: q.text || q.question || ('Câu ' + (idx + 1)),
-              choices: Array.isArray(q.choices) ? q.choices : (q.options || []),
-              correct: correct
+              choices: choices,
+              correct: corrList[0],
+              correctChoices: corrList,
+              isMultiple: Boolean(q.isMultiple || corrList.length > 1)
             };
           }).filter(q => q.choices.length >= 2);
 
@@ -326,32 +362,26 @@
         if (!qText) continue;
 
         const choices = [];
-        // Lấy các đáp án từ cột 1 trở đi
-        for (let c = 1; c < Math.min(row.length, 6); c++) {
+        // Lấy các đáp án từ cột 1 đến 4 (hoặc trước cột đáp án đúng)
+        const maxChoiceCols = Math.min(row.length - 1, 5);
+        for (let c = 1; c < maxChoiceCols; c++) {
           const val = String(row[c] || '').trim();
           if (val) choices.push(val);
         }
 
         if (choices.length < 2) continue;
 
-        // Đáp án đúng nằm ở cột cuối cùng (thường là cột 5 hoặc 6)
-        let correctIdx = 0;
-        const correctRaw = String(row[5] || row[choices.length] || row[row.length - 1] || '').trim().toUpperCase();
-        if (correctRaw.length === 1 && correctRaw >= 'A' && correctRaw <= 'H') {
-          correctIdx = correctRaw.charCodeAt(0) - 65;
-        } else if (/^\d+$/.test(correctRaw)) {
-          const parsed = parseInt(correctRaw, 10);
-          correctIdx = (parsed >= 1 && parsed <= choices.length) ? parsed - 1 : 0;
-        }
-
-        if (correctIdx < 0 || correctIdx >= choices.length) {
-          correctIdx = 0;
-        }
+        // Đáp án đúng nằm ở cột cuối cùng (thường là cột 5 hoặc row[choices.length + 1])
+        const correctRaw = String(row[5] !== undefined && String(row[5]).trim() !== '' ? row[5] : (row[row.length - 1] || '')).trim();
+        let corrList = parseAnswerIndices(correctRaw, choices.length);
+        if (corrList.length === 0) corrList = [0];
 
         questions.push({
           text: qText,
           choices: choices,
-          correct: correctIdx
+          correct: corrList[0],
+          correctChoices: corrList,
+          isMultiple: corrList.length > 1
         });
       }
 
@@ -368,8 +398,26 @@
     parseCsv: function(csvText, defaultTitle) {
       const lines = csvText.split(/\r?\n/).filter(l => l.trim());
       const rows = lines.map(line => {
-        // Tách dấu phẩy hoặc tab hoặc chấm phẩy
+        // Tách dấu phẩy hoặc tab hoặc chấm phẩy (giữ nguyên chuỗi trong ngoặc kép chứa dấu phẩy như "A, C")
         const separator = line.includes('\t') ? '\t' : (line.includes(';') ? ';' : ',');
+        if (separator === ',') {
+          const cols = [];
+          let cur = '';
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+              inQuotes = !inQuotes;
+            } else if (ch === ',' && !inQuotes) {
+              cols.push(cur.trim());
+              cur = '';
+            } else {
+              cur += ch;
+            }
+          }
+          cols.push(cur.trim());
+          return cols.map(c => c.replace(/^"(.*)"$/, '$1').trim());
+        }
         return line.split(separator).map(col => col.replace(/^"(.*)"$/, '$1').trim());
       });
       return ExamImporter.parseExcelRows(rows, defaultTitle);

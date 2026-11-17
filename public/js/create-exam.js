@@ -129,6 +129,7 @@
   /* ── STATE ── */
   let currentQuestions = [];
   let editingQuestionIndex = -1; // -1: adding new
+  let currentQuestionType = 'single'; // 'single' | 'multiple'
   let currentEditingExamId = null; // ID của đề thi đang được nạp để chỉnh sửa
   let publicExamsCache = []; // Cache danh sách đề thi từ Public Storage
 
@@ -284,9 +285,42 @@
   }
 
   /* ── QUESTION EDITOR LOGIC ── */
+  function getQuestionCorrectList(q) {
+    if (!q) return [0];
+    const maxLen = Array.isArray(q.choices) ? q.choices.length : 4;
+    if (Array.isArray(q.correctChoices) && q.correctChoices.length > 0) {
+      const uniq = Array.from(new Set(
+        q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen)
+      )).sort((a, b) => a - b);
+      if (uniq.length > 0) return uniq;
+    }
+    const c = Number(q.correct);
+    return (Number.isInteger(c) && c >= 0 && c < maxLen) ? [c] : [0];
+  }
+
+  function setQuestionTypeMode(mode) {
+    currentQuestionType = mode === 'multiple' ? 'multiple' : 'single';
+    const btnSingle = document.getElementById('btn-qtype-single');
+    const btnMulti = document.getElementById('btn-qtype-multiple');
+    if (btnSingle) btnSingle.classList.toggle('active', currentQuestionType === 'single');
+    if (btnMulti) btnMulti.classList.toggle('active', currentQuestionType === 'multiple');
+
+    const inputs = document.querySelectorAll('input[name="correct-answer"]');
+    let firstChecked = -1;
+    inputs.forEach((inp, idx) => {
+      if (inp.checked && firstChecked < 0) firstChecked = idx;
+      inp.type = currentQuestionType === 'multiple' ? 'checkbox' : 'radio';
+    });
+    if (currentQuestionType === 'single') {
+      const keepIdx = firstChecked >= 0 ? firstChecked : 0;
+      inputs.forEach((inp, idx) => { inp.checked = (idx === keepIdx); });
+    }
+    updateCorrectChoiceHighlight();
+  }
+
   function updateCorrectChoiceHighlight() {
-    const radios = document.querySelectorAll('input[name="correct-answer"]');
-    radios.forEach((r, idx) => {
+    const inputs = document.querySelectorAll('input[name="correct-answer"]');
+    inputs.forEach((r, idx) => {
       const row = document.getElementById('choice-row-' + idx);
       if (row) row.classList.toggle('is-correct', r.checked);
     });
@@ -315,13 +349,25 @@
       }
     }
 
-    const radios = document.querySelectorAll('input[name="correct-answer"]');
-    let correctIdx = 0;
-    radios.forEach((r, idx) => {
-      if (r.checked) correctIdx = idx;
+    const inputs = document.querySelectorAll('input[name="correct-answer"]');
+    const correctChoices = [];
+    inputs.forEach((r, idx) => {
+      if (r.checked) correctChoices.push(idx);
     });
 
-    const qData = { text, choices, correct: correctIdx };
+    if (currentQuestionType === 'multiple') {
+      if (correctChoices.length < 2) {
+        showToast('⚠️ Câu hỏi nhiều đáp án cần chọn ít nhất 2 đáp án đúng!');
+        return;
+      }
+    } else if (correctChoices.length === 0) {
+      correctChoices.push(0);
+    }
+
+    const isMulti = currentQuestionType === 'multiple';
+    const qData = isMulti
+      ? { text, choices, correct: correctChoices[0], correctChoices, isMultiple: true }
+      : { text, choices, correct: correctChoices[0] };
 
     if (editingQuestionIndex >= 0) {
       currentQuestions[editingQuestionIndex] = qData;
@@ -339,6 +385,8 @@
   function editQuestion(idx) {
     editingQuestionIndex = idx;
     const q = currentQuestions[idx];
+    const correctList = getQuestionCorrectList(q);
+    const isMulti = Boolean(q.isMultiple || correctList.length > 1);
 
     document.getElementById('q-form-heading').textContent = '✏️ Chỉnh sửa câu hỏi ' + (idx + 1);
     document.getElementById('q-text').value = q.text;
@@ -347,8 +395,11 @@
       document.getElementById('choice-input-' + i).value = c;
     });
 
-    const radios = document.querySelectorAll('input[name="correct-answer"]');
-    if (radios[q.correct]) radios[q.correct].checked = true;
+    setQuestionTypeMode(isMulti ? 'multiple' : 'single');
+    const inputs = document.querySelectorAll('input[name="correct-answer"]');
+    inputs.forEach((inp, i) => {
+      inp.checked = correctList.includes(i);
+    });
     updateCorrectChoiceHighlight();
 
     document.getElementById('btn-save-q').textContent = '💾 Lưu cập nhật câu hỏi';
@@ -378,8 +429,9 @@
     for (let i = 0; i < 4; i++) {
       document.getElementById('choice-input-' + i).value = '';
     }
-    const radios = document.querySelectorAll('input[name="correct-answer"]');
-    if (radios[0]) radios[0].checked = true;
+    setQuestionTypeMode('single');
+    const inputs = document.querySelectorAll('input[name="correct-answer"]');
+    inputs.forEach((inp, i) => { inp.checked = (i === 0); });
     updateCorrectChoiceHighlight();
   }
 
@@ -394,9 +446,12 @@
 
     const LETTERS = ['A', 'B', 'C', 'D'];
     listEl.innerHTML = currentQuestions.map((q, idx) => {
+      const correctList = getQuestionCorrectList(q);
+      const isMulti = Boolean(q.isMultiple || correctList.length > 1);
+      const multiBadge = isMulti ? '<span class="q-type-badge">Nhiều đáp án</span>' : '';
       return '<div class="q-item-card">'
         + '<div class="q-item-top">'
-        + '  <div class="q-item-title">Câu ' + (idx + 1) + ': ' + escapeHtml(q.text) + '</div>'
+        + '  <div class="q-item-title">Câu ' + (idx + 1) + ': ' + escapeHtml(q.text) + multiBadge + '</div>'
         + '  <div class="q-item-actions">'
         + '    <button class="btn-q-icon" onclick="editQuestion(' + idx + ')" title="Chỉnh sửa">✏️</button>'
         + '    <button class="btn-q-icon" onclick="deleteQuestion(' + idx + ')" title="Xóa">🗑️</button>'
@@ -404,8 +459,9 @@
         + '</div>'
         + '<div class="q-item-choices">'
         + q.choices.map((c, ci) => {
-            const corrClass = ci === q.correct ? 'correct' : '';
-            const tick = ci === q.correct ? '✓' : '';
+            const isCorr = correctList.includes(ci);
+            const corrClass = isCorr ? 'correct' : '';
+            const tick = isCorr ? '✓' : '';
             return '<div class="q-item-choice ' + corrClass + '"><b>' + LETTERS[ci] + '.</b> ' + escapeHtml(c) + ' ' + tick + '</div>';
           }).join('')
         + '</div>'
@@ -732,7 +788,7 @@
     }
   }
 
-  function renderImportPreview() {
+  function renderImportPreview(shouldScroll = true) {
     const container = document.getElementById('import-questions-list');
     const badge = document.getElementById('import-q-count-badge');
     const section = document.getElementById('import-preview-section');
@@ -749,10 +805,12 @@
     const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 
     container.innerHTML = currentImportedQuestions.map((q, qIdx) => {
+      const correctList = getQuestionCorrectList(q);
+      const isMulti = Boolean(q.isMultiple || correctList.length > 1);
       const choicesHtml = (q.choices || []).map((ch, cIdx) => {
-        const isCorrect = (cIdx === q.correct);
+        const isCorrect = correctList.includes(cIdx);
         const letter = letters[cIdx] || String(cIdx + 1);
-        return '<button type="button" class="import-choice-btn ' + (isCorrect ? 'correct' : '') + '" onclick="setImportQuestionCorrect(' + qIdx + ', ' + cIdx + ')" title="Bấm để chọn đáp án này là đúng">'
+        return '<button type="button" class="import-choice-btn ' + (isCorrect ? 'correct' : '') + '" onclick="setImportQuestionCorrect(' + qIdx + ', ' + cIdx + ')" title="' + (isMulti ? 'Bấm để bật/tắt đáp án đúng' : 'Bấm để chọn đáp án này là đúng') + '">'
           + '<span class="import-choice-tag">' + letter + '.</span>'
           + '<span class="import-choice-val">' + escapeHtml(ch) + '</span>'
           + (isCorrect ? '<span class="import-choice-check">✓ Đúng</span>' : '')
@@ -762,6 +820,7 @@
       return '<div class="import-q-card" id="import-q-' + qIdx + '">'
         + '<div class="import-q-header">'
         + '  <span class="import-q-number">Câu ' + (qIdx + 1) + ':</span>'
+        + '  <button type="button" class="import-q-type-btn ' + (isMulti ? 'is-multi' : '') + '" onclick="toggleImportQuestionMode(' + qIdx + ')" title="Chuyển chế độ 1 đáp án / nhiều đáp án">' + (isMulti ? '☑️ Nhiều đáp án' : '🔘 1 đáp án') + '</button>'
         + '  <button type="button" class="btn-import-q-delete" onclick="deleteImportQuestion(' + qIdx + ')" title="Xóa câu hỏi này">🗑️</button>'
         + '</div>'
         + '<input type="text" class="import-q-text-input" value="' + escapeHtml(q.text) + '" onchange="updateImportQuestionText(' + qIdx + ', this.value)" placeholder="Nội dung câu hỏi..." />'
@@ -771,7 +830,7 @@
         + '</div>';
     }).join('');
 
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (shouldScroll) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function updateImportQuestionText(qIdx, val) {
@@ -780,17 +839,56 @@
     }
   }
 
-  function setImportQuestionCorrect(qIdx, cIdx) {
-    if (currentImportedQuestions[qIdx]) {
-      currentImportedQuestions[qIdx].correct = cIdx;
-      renderImportPreview();
+  function toggleImportQuestionMode(qIdx) {
+    const q = currentImportedQuestions[qIdx];
+    if (!q) return;
+    const correctList = getQuestionCorrectList(q);
+    const nextMulti = !(q.isMultiple || correctList.length > 1);
+    if (nextMulti) {
+      q.isMultiple = true;
+      q.correctChoices = correctList;
+      q.correct = correctList[0] ?? 0;
+    } else {
+      q.isMultiple = false;
+      const keep = correctList[0] ?? 0;
+      q.correct = keep;
+      q.correctChoices = [keep];
     }
+    renderImportPreview(false);
+  }
+
+  function setImportQuestionCorrect(qIdx, cIdx) {
+    const q = currentImportedQuestions[qIdx];
+    if (!q) return;
+    const correctList = getQuestionCorrectList(q);
+    const isMulti = Boolean(q.isMultiple || correctList.length > 1);
+    if (isMulti) {
+      const existsIdx = correctList.indexOf(cIdx);
+      if (existsIdx >= 0) {
+        if (correctList.length <= 1) {
+          showToast('⚠️ Phải giữ ít nhất 1 đáp án được chọn (hoặc chuyển về chế độ 1 đáp án)!');
+          return;
+        }
+        correctList.splice(existsIdx, 1);
+      } else {
+        correctList.push(cIdx);
+        correctList.sort((a, b) => a - b);
+      }
+      q.correctChoices = correctList;
+      q.correct = correctList[0];
+      q.isMultiple = true;
+    } else {
+      q.correct = cIdx;
+      q.correctChoices = [cIdx];
+      q.isMultiple = false;
+    }
+    renderImportPreview(false);
   }
 
   function deleteImportQuestion(qIdx) {
     if (qIdx >= 0 && qIdx < currentImportedQuestions.length) {
       currentImportedQuestions.splice(qIdx, 1);
-      renderImportPreview();
+      renderImportPreview(false);
       showToast('🗑️ Đã xóa câu hỏi!');
     }
   }
@@ -817,6 +915,7 @@
       return null;
     }
 
+    const normalizedQuestions = [];
     for (let i = 0; i < currentImportedQuestions.length; i++) {
       const q = currentImportedQuestions[i];
       if (!q.text || !q.text.trim()) {
@@ -827,10 +926,22 @@
         showToast('⚠️ Câu ' + (i + 1) + ' cần có ít nhất 2 đáp án!');
         return null;
       }
-      if (typeof q.correct !== 'number' || q.correct < 0 || q.correct >= q.choices.length) {
+      const correctList = getQuestionCorrectList(q);
+      if (correctList.length === 0) {
         showToast('⚠️ Câu ' + (i + 1) + ' chưa có đáp án đúng được chọn!');
         return null;
       }
+      if (q.isMultiple && correctList.length < 2) {
+        showToast('⚠️ Câu ' + (i + 1) + ' ở chế độ nhiều đáp án cần chọn ít nhất 2 đáp án đúng!');
+        return null;
+      }
+      const isMulti = correctList.length > 1;
+      normalizedQuestions.push({
+        text: q.text.trim(),
+        choices: q.choices.slice(),
+        correct: correctList[0],
+        ...(isMulti ? { correctChoices: correctList, isMultiple: true } : {})
+      });
     }
 
     const subject = (document.getElementById('import-exam-subject')?.value || '').trim() || 'Tổng hợp';
@@ -844,7 +955,7 @@
       subject: subject,
       timePerQ: timePerQ,
       pointsPerQ: pointsPerQ,
-      questions: JSON.parse(JSON.stringify(currentImportedQuestions)),
+      questions: normalizedQuestions,
       createdAt: new Date().toLocaleDateString('vi-VN')
     };
   }
@@ -1185,11 +1296,13 @@
       <span style="color:var(--gray-text);">${authorText}</span>
     `;
 
-    const letters = ['A', 'B', 'C', 'D'];
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
     const listEl = document.getElementById('qv-questions-list');
     listEl.innerHTML = (exam.questions || []).map((q, i) => {
+      const correctList = getQuestionCorrectList(q);
+      const isMulti = Boolean(q.isMultiple || correctList.length > 1);
       const choicesHtml = (q.choices || []).map((choice, cIdx) => {
-        const isCorrect = q.correct === cIdx;
+        const isCorrect = correctList.includes(cIdx);
         return `<div class="qv-choice-item ${isCorrect ? 'is-correct' : ''}">
           <span class="qv-choice-letter">${letters[cIdx] || (cIdx+1)}.</span>
           <span class="qv-choice-text">${escapeHtml(choice)}</span>
@@ -1200,7 +1313,7 @@
       return `<div class="qv-q-card">
         <div class="qv-q-header">
           <span class="qv-q-num">Câu ${i + 1}:</span>
-          <span class="qv-q-text">${escapeHtml(q.text)}</span>
+          <span class="qv-q-text">${escapeHtml(q.text)}${isMulti ? ' <span class="q-type-badge">Nhiều đáp án</span>' : ''}</span>
         </div>
         <div class="qv-choices-grid">
           ${choicesHtml}
@@ -1528,7 +1641,8 @@
     if (!q) return '';
     const text = String(q.text || '').trim().toLowerCase().replace(/\s+/g, ' ');
     const choices = (q.choices || []).map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' '));
-    const correctText = choices[q.correct] || '';
+    const correctList = getQuestionCorrectList(q);
+    const correctText = correctList.map(idx => choices[idx] || '').sort().join(',');
     const sortedChoices = [...choices].sort().join('|');
     return `q:${text}#c:${correctText}#ch:${sortedChoices}`;
   }
@@ -1627,4 +1741,114 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  /* ── AI QUESTION GENERATOR (BACKEND GEMINI PROXY) ── */
+  let isGeneratingAIQuestions = false;
+
+  function openAiGenerateModal() {
+    const modal = document.getElementById('ai-generate-modal');
+    if (!modal) return;
+    const errEl = document.getElementById('ai-gen-error');
+    if (errEl) {
+      errEl.style.display = 'none';
+      errEl.textContent = '';
+    }
+    const topicEl = document.getElementById('ai-topic-input');
+    const levelEl = document.getElementById('ai-level-input');
+    const currentSubject = (document.getElementById('exam-subject')?.value || '').trim();
+    const currentTitle = (document.getElementById('exam-title')?.value || '').trim();
+    if (topicEl && !topicEl.value.trim() && currentTitle) {
+      topicEl.value = currentTitle;
+    }
+    if (levelEl && !levelEl.value.trim() && currentSubject) {
+      levelEl.value = currentSubject;
+    }
+    modal.classList.add('show');
+    setTimeout(() => topicEl?.focus(), 60);
+  }
+
+  function closeAiGenerateModal() {
+    if (isGeneratingAIQuestions) return;
+    document.getElementById('ai-generate-modal')?.classList.remove('show');
+  }
+
+  function showAiGenError(msg) {
+    const errEl = document.getElementById('ai-gen-error');
+    if (!errEl) return;
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  }
+
+  async function handleGenerateQuestionsAI() {
+    if (isGeneratingAIQuestions) return;
+
+    const topic = (document.getElementById('ai-topic-input')?.value || '').trim();
+    const gradeOrLevel = (document.getElementById('ai-level-input')?.value || '').trim();
+    const count = Number(document.getElementById('ai-count-select')?.value) || 5;
+    const questionType = document.getElementById('ai-qtype-select')?.value || 'mixed';
+    const insertMode = document.getElementById('ai-insert-mode')?.value || 'append';
+
+    const errEl = document.getElementById('ai-gen-error');
+    if (errEl) errEl.style.display = 'none';
+
+    if (topic.length < 2) {
+      showAiGenError('Vui lòng nhập chủ đề hoặc nội dung trọng tâm (tối thiểu 2 ký tự).');
+      document.getElementById('ai-topic-input')?.focus();
+      return;
+    }
+
+    const btnSubmit = document.getElementById('btn-ai-submit');
+    const btnCancel = document.getElementById('btn-ai-cancel');
+    isGeneratingAIQuestions = true;
+    if (btnSubmit) {
+      btnSubmit.disabled = true;
+      btnSubmit.textContent = 'Đang tạo câu hỏi...';
+    }
+    if (btnCancel) btnCancel.disabled = true;
+
+    try {
+      const res = await fetch('/api/ai/generate-questions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ topic, gradeOrLevel, count, questionType }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.success || !Array.isArray(data.questions) || data.questions.length === 0) {
+        showAiGenError(data.message || 'Không tạo được câu hỏi lúc này. Vui lòng thử lại.');
+        return;
+      }
+
+      if (insertMode === 'replace') {
+        currentQuestions = data.questions.slice();
+      } else {
+        currentQuestions = currentQuestions.concat(data.questions);
+      }
+
+      const titleInput = document.getElementById('exam-title');
+      const subjectInput = document.getElementById('exam-subject');
+      if (titleInput && !titleInput.value.trim() && data.suggestedTitle) {
+        titleInput.value = data.suggestedTitle;
+      }
+      if (subjectInput && !subjectInput.value.trim() && data.suggestedSubject) {
+        subjectInput.value = data.suggestedSubject;
+      }
+
+      cancelEditQuestion();
+      renderQuestionsList();
+      isGeneratingAIQuestions = false;
+      closeAiGenerateModal();
+      showToast('Đã nạp ' + data.questions.length + ' câu hỏi AI vào trình soạn thảo. Hãy kiểm tra trước khi lưu!');
+    } catch (err) {
+      showAiGenError('Không thể kết nối tới máy chủ để tạo câu hỏi.');
+    } finally {
+      isGeneratingAIQuestions = false;
+      if (btnSubmit) {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = 'Tạo câu hỏi';
+      }
+      if (btnCancel) btnCancel.disabled = false;
+    }
   }

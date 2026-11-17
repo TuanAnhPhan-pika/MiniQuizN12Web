@@ -209,6 +209,46 @@
   gap: 8px;
 }
 
+.q-type-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--blue-light);
+  border: 1.5px solid var(--blue-border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.btn-q-type {
+  border: none;
+  background: transparent;
+  color: var(--gray-text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.btn-q-type.active {
+  background: var(--blue-dark);
+  color: #fff;
+}
+
+.q-type-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  border-radius: 6px;
+  background: #EDE7F6;
+  color: #5E35B1;
+  border: 1px solid #D1C4E9;
+  vertical-align: middle;
+}
+
 /* Form controls */
 .form-row {
   display: grid;
@@ -1157,6 +1197,26 @@ body.dark .exam-code-tag {
   border-radius: 8px;
   padding: 4px 8px;
   line-height: 1;
+}
+
+.import-q-type-btn {
+  border: 1.5px solid var(--blue-border);
+  background: var(--card-bg, #ffffff);
+  color: var(--blue-dark);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 8px;
+  transition: all .15s;
+}
+
+.import-q-type-btn.is-multi {
+  background: #EDE7F6;
+  border-color: #7E57C2;
+  color: #5E35B1;
 }
 
 .btn-import-q-delete:hover {
@@ -2266,6 +2326,150 @@ body.dark .btn-import-editor {
   background: var(--card-bg);
   color: var(--blue-dark);
   border-color: var(--blue-dark);
+}
+body.dark .q-type-toggle {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--blue-border);
+}
+body.dark .q-type-badge,
+body.dark .import-q-type-btn.is-multi {
+  background: rgba(126, 87, 194, 0.25);
+  border-color: #9575CD;
+  color: #D1C4E9;
+}
+body.dark .import-q-type-btn {
+  background: var(--card-bg);
+  color: var(--blue-dark);
+  border-color: var(--blue-border);
+}
+
+/* ── AI QUESTION GENERATOR TRIGGER & MODAL ── */
+.editor-header-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-ai-trigger {
+  background: var(--blue-dark);
+  color: #ffffff;
+  border: 1.5px solid var(--blue-dark);
+  border-radius: 10px;
+  padding: 6px 14px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .16s ease, transform .16s ease;
+}
+
+.btn-ai-trigger:hover {
+  background: var(--blue-mid);
+  border-color: var(--blue-mid);
+  transform: translateY(-1px);
+}
+
+.ai-gen-modal-card {
+  max-width: 560px;
+  width: 94%;
+  gap: 14px;
+}
+
+.ai-gen-desc {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--gray-text);
+}
+
+.ai-topic-textarea {
+  width: 100%;
+  border: 2px solid var(--blue-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.94rem;
+  font-weight: 600;
+  color: var(--text-main, #1A237E);
+  background: var(--card-bg, #ffffff);
+  outline: none;
+  resize: vertical;
+  min-height: 76px;
+  line-height: 1.45;
+  transition: border-color .2s, box-shadow .2s;
+}
+
+.ai-topic-textarea:focus {
+  border-color: var(--blue-dark);
+  box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.15);
+}
+
+.ai-gen-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.ai-gen-error {
+  background: #FFEBEE;
+  border: 1.5px solid #EF9A9A;
+  color: #C62828;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.btn-ai-submit {
+  background: var(--blue-dark);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 20px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background .16s ease, opacity .16s ease;
+}
+
+.btn-ai-submit:hover:not(:disabled) {
+  background: var(--blue-mid);
+}
+
+.btn-ai-submit:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+body.dark .ai-topic-textarea {
+  background: var(--card-bg);
+  color: var(--text-main);
+  border-color: var(--blue-border);
+}
+
+body.dark .ai-gen-error {
+  background: rgba(211, 47, 47, 0.2);
+  border-color: rgba(239, 154, 154, 0.5);
+  color: #FFCDD2;
+}
+
+body.dark .btn-ai-trigger,
+body.dark .btn-ai-submit {
+  background: var(--blue-mid);
+  border-color: var(--blue-mid);
+  color: #0F172A;
+}
+
+@media (max-width: 600px) {
+  .ai-gen-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── TOAST NOTIFICATION ── */

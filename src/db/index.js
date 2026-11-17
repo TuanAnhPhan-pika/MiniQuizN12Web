@@ -299,11 +299,12 @@ async function formatQuizWithQuestionsSupabase(quizRow, includeCorrect = true) {
       .order('order_index', { ascending: true });
 
     const choices = [];
-    let correctIndex = 0;
+    const correctChoices = [];
     (optList || []).forEach((opt, idx) => {
       choices.push(opt.content);
-      if (opt.is_correct) correctIndex = idx;
+      if (opt.is_correct) correctChoices.push(idx);
     });
+    const isMulti = correctChoices.length > 1;
 
     const qObj = {
       id: qv.question_id || qq.question_version_id,
@@ -311,6 +312,7 @@ async function formatQuizWithQuestionsSupabase(quizRow, includeCorrect = true) {
       version: qv.version || 1,
       text: qv.content || '',
       choices: choices,
+      ...(isMulti ? { isMultiple: true } : {}),
       explanation: qv.explanation || '',
       difficulty: qv.difficulty || 'medium',
       image: qv.image_url || '',
@@ -318,7 +320,8 @@ async function formatQuizWithQuestionsSupabase(quizRow, includeCorrect = true) {
       timeLimit: qq.time_limit || 15,
     };
     if (includeCorrect) {
-      qObj.correct = correctIndex;
+      qObj.correct = correctChoices.length > 0 ? correctChoices[0] : 0;
+      if (isMulti) qObj.correctChoices = correctChoices;
     }
     questions.push(qObj);
   }
@@ -534,6 +537,11 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
       let targetVersionId = null;
       let targetVersion = 1;
       const currentChoices = Array.isArray(q.choices) ? q.choices : [];
+      const correctSet = new Set(
+        (Array.isArray(q.correctChoices) && q.correctChoices.length > 0)
+          ? q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < currentChoices.length)
+          : (typeof q.correct === 'number' && Number.isInteger(q.correct) && q.correct >= 0 && q.correct < currentChoices.length ? [q.correct] : [])
+      );
 
       if (lastVRes.rows.length === 0) {
         // Chưa có version nào -> Tạo v1
@@ -548,7 +556,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
           await client.query(
             `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
              VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
-            [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), (q.correct === cIdx), cIdx]
+            [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), correctSet.has(cIdx), cIdx]
           );
         }
       } else {
@@ -565,7 +573,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
         if (!hasChanged) {
           for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
             const opt = lastOpts[cIdx];
-            if (!opt || opt.content !== String(currentChoices[cIdx]) || opt.is_correct !== (q.correct === cIdx)) {
+            if (!opt || opt.content !== String(currentChoices[cIdx]) || opt.is_correct !== correctSet.has(cIdx)) {
               hasChanged = true;
               break;
             }
@@ -585,7 +593,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
             await client.query(
               `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
                VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING`,
-              [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), (q.correct === cIdx), cIdx]
+              [`${targetVersionId}-opt-${cIdx}`, targetVersionId, String(currentChoices[cIdx]), correctSet.has(cIdx), cIdx]
             );
           }
         } else {
@@ -739,6 +747,7 @@ async function getUserAttempts(username) {
         questionText: row.q_text || `Câu hỏi ${row.question_index + 1}`,
         choices: [],
         correctChoice: -1,
+        correctChoices: [],
         userChoice: row.user_choice,
         isCorrect: row.is_correct,
         earned: row.score_awarded,
@@ -750,7 +759,10 @@ async function getUserAttempts(username) {
     if (row.opt_content !== null && row.opt_content !== undefined) {
       qObj.choices.push(row.opt_content);
       if (row.opt_is_correct) {
-        qObj.correctChoice = qObj.choices.length - 1;
+        const optIdx = qObj.choices.length - 1;
+        qObj.correctChoice = optIdx;
+        qObj.correctChoices.push(optIdx);
+        if (qObj.correctChoices.length > 1) qObj.questionType = 'multiple';
       }
     }
   }
@@ -854,13 +866,17 @@ async function saveAttempt(record) {
         }
       }
 
+      const primaryUserChoice = typeof ans.userChoice === 'number'
+        ? ans.userChoice
+        : (Array.isArray(ans.userChoices) && ans.userChoices.length > 0 ? Number(ans.userChoices[0]) : -1);
+
       await client.query(
         `INSERT INTO attempt_answers (attempt_id, question_index, question_version_id, selected_option_id, user_choice, is_correct, response_time_ms, score_awarded, streak_before, streak_after, answered_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (attempt_id, question_index) DO NOTHING`,
         [
           attemptId, qIdx, ans.questionVersionId || null, optionId,
-          ans.userChoice !== undefined ? ans.userChoice : -1,
+          Number.isInteger(primaryUserChoice) ? primaryUserChoice : -1,
           !!ans.isCorrect, ans.responseTimeMs || 0, ans.earned || ans.scoreAwarded || 0,
           ans.streakBefore || 0, ans.streakAfter || ans.streak || 0, now
         ]
@@ -981,24 +997,29 @@ async function formatQuizWithQuestionsPG(quizRow, includeCorrect = true) {
       [qRow.version_id]
     );
     const choices = [];
-    let correctIndex = 0;
+    const correctChoices = [];
     optRes.rows.forEach((opt, idx) => {
       choices.push(opt.content);
-      if (opt.is_correct) correctIndex = idx;
+      if (opt.is_correct) correctChoices.push(idx);
     });
+    const isMulti = correctChoices.length > 1;
     const qObj = {
       id: qRow.question_id,
       versionId: qRow.version_id,
       version: qRow.version,
       text: qRow.content,
       choices: choices,
+      ...(isMulti ? { isMultiple: true } : {}),
       explanation: includeCorrect ? (qRow.explanation || '') : '',
       difficulty: qRow.difficulty || 'medium',
       image: qRow.image_url || '',
       points: qRow.points || 100,
       timeLimit: qRow.time_limit || 15,
     };
-    if (includeCorrect) qObj.correct = correctIndex;
+    if (includeCorrect) {
+      qObj.correct = correctChoices.length > 0 ? correctChoices[0] : 0;
+      if (isMulti) qObj.correctChoices = correctChoices;
+    }
     questions.push(qObj);
   }
   return {
@@ -1023,6 +1044,89 @@ async function formatQuizWithQuestionsPG(quizRow, includeCorrect = true) {
   };
 }
 
+async function getHostedGameSessionById(sessionId) {
+  if (!sessionId) return null;
+  const res = await pg.query(`SELECT * FROM game_sessions WHERE id = $1 LIMIT 1`, [String(sessionId)]);
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+  return {
+    id: row.id,
+    hostId: row.host_id || '',
+    hostUserId: row.host_user_id || null,
+    pin: row.room_code || '',
+    roomTitle: row.room_title || '',
+    createdAt: Number(row.created_at),
+    finishedAt: Number(row.ended_at || row.created_at),
+    formattedTime: row.formatted_time || '',
+    stats: typeof row.stats === 'string' ? JSON.parse(row.stats) : (row.stats || {}),
+  };
+}
+
+async function createAiDocument({ ownerUsername, ownerUserId = null, title, filePath = '', contentText = '' }) {
+  const owner = String(ownerUsername || 'system').toLowerCase();
+  let resolvedUserId = ownerUserId || null;
+  if (!resolvedUserId && owner) {
+    const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [owner]);
+    resolvedUserId = uRes.rows[0]?.id || null;
+  }
+  const res = await pg.query(
+    `INSERT INTO documents (owner_id, owner_user_id, title, file_path, content_text)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, owner_id, title, file_path, created_at`,
+    [owner, resolvedUserId, String(title || 'AI Document').slice(0, 255), String(filePath || ''), String(contentText || '')]
+  );
+  return res.rows[0] || null;
+}
+
+async function createAiGenerationJob({ username, accountUserId = null, status = 'pending', prompt = '', resultData = null }) {
+  const owner = String(username || 'system').toLowerCase();
+  let resolvedUserId = accountUserId || null;
+  if (!resolvedUserId && owner) {
+    const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [owner]);
+    resolvedUserId = uRes.rows[0]?.id || null;
+  }
+  const res = await pg.query(
+    `INSERT INTO ai_generation_jobs (user_id, account_user_id, status, prompt, result_data)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, user_id, status, created_at`,
+    [owner, resolvedUserId, String(status || 'pending').slice(0, 30), String(prompt || ''), resultData ? JSON.stringify(resultData) : null]
+  );
+  return res.rows[0] || null;
+}
+
+async function updateAiGenerationJob(jobId, { status, resultData = null }) {
+  if (!jobId) return null;
+  const res = await pg.query(
+    `UPDATE ai_generation_jobs
+     SET status = $2,
+         result_data = COALESCE($3::jsonb, result_data)
+     WHERE id = $1
+     RETURNING id, status`,
+    [jobId, String(status || 'completed').slice(0, 30), resultData ? JSON.stringify(resultData) : null]
+  );
+  return res.rows[0] || null;
+}
+
+async function findCachedWeaknessAnalysis(username, cacheKey) {
+  if (!username || !cacheKey) return null;
+  const owner = String(username).toLowerCase();
+  const res = await pg.query(
+    `SELECT id, result_data, created_at
+     FROM ai_generation_jobs
+     WHERE LOWER(user_id) = $1
+       AND status = 'completed'
+       AND result_data->>'jobType' = 'weakness-analysis'
+       AND result_data->>'cacheKey' = $2
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [owner, String(cacheKey)]
+  );
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+  const data = typeof row.result_data === 'string' ? JSON.parse(row.result_data) : (row.result_data || {});
+  return data.analysis ? { jobId: row.id, model: data.model || '', analysis: data.analysis } : null;
+}
+
 module.exports = {
   supabase,
   useSupabase,
@@ -1045,4 +1149,9 @@ module.exports = {
   createWaitingGameSession,
   saveHostedGameSession,
   getHostedGameSessions,
+  getHostedGameSessionById,
+  createAiDocument,
+  createAiGenerationJob,
+  updateAiGenerationJob,
+  findCachedWeaknessAnalysis,
 };

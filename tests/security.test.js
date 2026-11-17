@@ -378,3 +378,205 @@ test('question snapshots preserve ranking, repeated opens, late joins and streak
   await rooms.finishAndArchiveRoom(room.pin);
   assert.equal(rooms.getLeaderboard(room.pin).find(p => p.id === 'a').streak, 0);
 });
+
+test('2s server lag grace window, UTC clock metadata, and multiple-choice all-or-nothing lifecycle', async t => {
+  const savedAttempts = [];
+  const db = {
+    async saveAttempt(record) { savedAttempts.push(record); return record; },
+    async saveHostedGameSession() {},
+  };
+  const rooms = load('src/rooms/manager.js', { '../db/index.js': db });
+  const room = await rooms.createRoom({
+    hostUsername: 'teacher',
+    exam: {
+      title: 'Multi & Grace Exam',
+      questions: [
+        { text: 'Single Q', choices: ['A', 'B'], correct: 1, timeLimit: 10 },
+        { text: 'Multi Q', choices: ['2', '4', '5', '9'], correct: 0, correctChoices: [0, 2], isMultiple: true, timeLimit: 10 },
+      ],
+    },
+  });
+  const auth = {
+    parseCookies: () => ({}),
+    getSession: token => token === 'host' ? { username: 'teacher' } : (token === 'student' ? { username: 'alice' } : null),
+    findUserByUsernameSync: u => u === 'teacher' ? { id: 1, role: 'teacher' } : { id: 7, role: 'student' },
+  };
+  const { server } = load('src/server.js', {
+    dotenv: { config() {} }, './auth.js': auth, './db/index.js': db,
+    './db/migrate.js': {}, './rooms/manager.js': rooms,
+  }, '\nmodule.exports = { server };');
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const route = `/api/rooms/${room.pin}`;
+  const hostHeaders = { Authorization: 'Bearer host' };
+  const post = (url, body, headers = {}) => fetch(base + url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+
+  const pExact = (await (await post(route + '/join', { id: 'pExact', nick: 'exact' }, { Authorization: 'Bearer student' })).json()).player;
+  const pPartial = (await (await post(route + '/join', { id: 'pPartial', nick: 'partial' })).json()).player;
+  const pLateOk = (await (await post(route + '/join', { id: 'pLateOk', nick: 'lateok' })).json()).player;
+  const pTooLate = (await (await post(route + '/join', { id: 'pTooLate', nick: 'toolate' })).json()).player;
+
+  // Room & /state include UTC clock timestamps and never leak correct/correctChoices before reveal
+  await post(route + '/advance', { nextQ: 0, phase: 'question' }, hostHeaders);
+  const studentRoom = await (await fetch(base + route)).json();
+  assert.equal(typeof studentRoom.room.serverNow, 'number');
+  assert.equal(typeof studentRoom.room.questionStartedAt, 'number');
+  assert.equal(studentRoom.room.questionDeadline, studentRoom.room.questionStartedAt + 10000);
+  assert.equal(Object.hasOwn(studentRoom.room.questions[1], 'correctChoices'), false);
+  assert.equal(studentRoom.room.questions[1].isMultiple, true);
+
+  const stateRes = await (await fetch(base + route + '/state')).json();
+  assert.equal(typeof stateRes.serverNow, 'number');
+  assert.equal(stateRes.questionDeadline, stateRes.questionStartedAt + 10000);
+
+  // Test 2-second grace window: 11.5s elapsed (within 10s + 2s grace) is accepted & clamped to 10s
+  rooms.getRawRoom(room.pin).questionStartedAt = Date.now() - 11500;
+  const lateOkRes = await (await post(route + '/answer', {
+    playerId: pLateOk.id, playerToken: pLateOk.playerToken, qIdx: 0, choice: 1,
+  })).json();
+  assert.equal(lateOkRes.success, true);
+  assert.equal(rooms.getRawRoom(room.pin).answers[0][pLateOk.id].responseTimeMs, 10000);
+
+  // Test > 2-second grace window: 12.5s elapsed (past 10s + 2s grace) is rejected as timedOut
+  rooms.getRawRoom(room.pin).questionStartedAt = Date.now() - 12500;
+  const tooLateRes = await (await post(route + '/answer', {
+    playerId: pTooLate.id, playerToken: pTooLate.playerToken, qIdx: 0, choice: 1,
+  })).json();
+  assert.equal(tooLateRes.success, false);
+  assert.equal(tooLateRes.rejected, true);
+  assert.equal(tooLateRes.timedOut, true);
+
+  // Advance to Q1 (Multiple Choice: correct [0, 2])
+  await post(route + '/advance', { nextQ: 1, phase: 'question' }, hostHeaders);
+
+  // Exact match [2, 0] (unsorted from client) -> correct!
+  const exactAns = await (await post(route + '/answer', {
+    playerId: pExact.id, playerToken: pExact.playerToken, qIdx: 1, choices: [2, 0],
+  })).json();
+  assert.equal(exactAns.success, true);
+  assert.deepEqual(exactAns.choices, [0, 2]);
+
+  // Partial match [0] -> wrong (All-or-Nothing)
+  await post(route + '/answer', {
+    playerId: pPartial.id, playerToken: pPartial.playerToken, qIdx: 1, choices: [0],
+  });
+
+  // Extra match [0, 1, 2] -> wrong (All-or-Nothing)
+  await post(route + '/answer', {
+    playerId: pLateOk.id, playerToken: pLateOk.playerToken, qIdx: 1, choices: [0, 1, 2],
+  });
+
+  // Check /question-stats tallies all chosen options while counting unique players
+  const qStats = await (await fetch(base + route + '/question-stats?q=1')).json();
+  assert.equal(qStats.totalAnswered, 3);
+  assert.deepEqual(qStats.choicesCount, [3, 1, 2, 0]);
+
+  // Reveal Q1 result
+  await post(route + '/advance', { nextQ: 1, phase: 'result' }, hostHeaders);
+  const q1Result = await (await fetch(base + route + '/result?q=1&playerId=' + pExact.id, {
+    headers: { 'X-Player-Token': pExact.playerToken },
+  })).json();
+  assert.equal(q1Result.isMultiple, true);
+  assert.deepEqual(q1Result.correctChoices, [0, 2]);
+  assert.equal(q1Result.correctText, '2, 5');
+  assert.deepEqual(q1Result.distribution, [3, 1, 2, 0]);
+  assert.equal(q1Result.playerResult.isCorrect, true);
+  assert.deepEqual(q1Result.playerResult.choices, [0, 2]);
+
+  const partialResult = await (await fetch(base + route + '/result?q=1&playerId=' + pPartial.id, {
+    headers: { 'X-Player-Token': pPartial.playerToken },
+  })).json();
+  assert.equal(partialResult.playerResult.isCorrect, false);
+  assert.equal(partialResult.playerResult.scoreEarned, 0);
+
+  // Finish & verify calculateExamStats + POST /api/history details
+  await post('/api/history/hosted', { pin: room.pin }, hostHeaders);
+  const histRes = await post('/api/history', { pin: room.pin, playerId: pExact.id, playerToken: pExact.playerToken }, { Authorization: 'Bearer student' });
+  assert.equal(histRes.status, 200);
+  assert.equal(savedAttempts.length, 1);
+  assert.equal(savedAttempts[0].answersDetail[1].questionType, 'multiple');
+  assert.deepEqual(Array.from(savedAttempts[0].answersDetail[1].correctChoices), [0, 2]);
+  assert.deepEqual(Array.from(savedAttempts[0].answersDetail[1].userChoices), [0, 2]);
+  assert.equal(savedAttempts[0].answersDetail[1].isCorrect, true);
+});
+
+test('PG multi-choice persistence round-trip and ExamImporter multi-choice parsing', async () => {
+  // 1. PG formatQuizWithQuestionsPG & public privacy check for multi-choice
+  const pg = {
+    async query(sql) {
+      if (/FROM quizzes/.test(sql)) return { rows: [{ id: 'mq1', is_public: true }] };
+      if (/FROM quiz_questions/.test(sql)) return { rows: [{ version_id: 'v1', explanation: '' }] };
+      return {
+        rows: [
+          { content: '2', is_correct: true },
+          { content: '4', is_correct: false },
+          { content: '5', is_correct: true },
+          { content: '9', is_correct: false },
+        ],
+      };
+    },
+  };
+  const db = load('src/db/index.js', { './pool.js': pg, '@supabase/supabase-js': {} });
+  const pub = await db.getPublicQuizById('mq1');
+  assert.equal(pub.questions[0].isMultiple, true);
+  assert.equal(Object.hasOwn(pub.questions[0], 'correct'), false);
+  assert.equal(Object.hasOwn(pub.questions[0], 'correctChoices'), false);
+
+  const internal = await db.getPublicQuizById('mq1', { includeCorrect: true });
+  assert.equal(internal.questions[0].isMultiple, true);
+  assert.equal(internal.questions[0].correct, 0);
+  assert.deepEqual(Array.from(internal.questions[0].correctChoices), [0, 2]);
+
+  // 2. ExamImporter multi-choice parsing (Text/Word, Aiken, end key, Excel rows, CSV)
+  const importerCtx = { console, window: {} };
+  vm.runInNewContext(fs.readFileSync(path.resolve('public/js/exam-importer.js'), 'utf8'), importerCtx);
+  const ExamImporter = importerCtx.window.ExamImporter;
+
+  const textRes = ExamImporter.parseVnText(`
+Câu 1: Số nào là số nguyên tố?
+*A. 2
+B. 4
+*C. 5
+D. 9
+
+Câu 2: Ngôn ngữ web?
+A. JavaScript
+B. HTML
+C. C++
+D. CSS
+Đáp án: A, B, D
+
+Câu 3: Thử bảng đáp án cuối đề
+A. Một
+B. Hai
+C. Ba
+D. Bốn
+
+Đáp án:
+3. A, C
+  `);
+  assert.equal(textRes.questions.length, 3);
+  assert.deepEqual(Array.from(textRes.questions[0].correctChoices), [0, 2]);
+  assert.equal(textRes.questions[0].isMultiple, true);
+  assert.deepEqual(Array.from(textRes.questions[1].correctChoices), [0, 1, 3]);
+  assert.equal(textRes.questions[1].isMultiple, true);
+  assert.deepEqual(Array.from(textRes.questions[2].correctChoices), [0, 2]);
+  assert.equal(textRes.questions[2].isMultiple, true);
+
+  const excelRes = ExamImporter.parseExcelRows([
+    ['Câu hỏi', 'A', 'B', 'C', 'D', 'Đáp án'],
+    ['Chọn nguyên âm', 'a', 'b', 'e', 'd', 'A, C'],
+  ]);
+  assert.equal(excelRes.questions.length, 1);
+  assert.deepEqual(Array.from(excelRes.questions[0].correctChoices), [0, 2]);
+  assert.equal(excelRes.questions[0].isMultiple, true);
+
+  const csvRes = ExamImporter.parseCsv('Câu hỏi,A,B,C,D,Đáp án\n"Chọn 2 số chẵn",1,2,3,4,"B, D"');
+  assert.equal(csvRes.questions.length, 1);
+  assert.deepEqual(Array.from(csvRes.questions[0].correctChoices), [1, 3]);
+  assert.equal(csvRes.questions[0].isMultiple, true);
+});
+

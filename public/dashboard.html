@@ -148,6 +148,17 @@
       </div>
     </div>
 
+    <!-- TÓM TẮT ĐIỂM YẾU LỚP HỌC BẰNG AI -->
+    <div class="ai-weakness-card" id="dash-ai-weakness-card" style="margin-bottom: 24px;">
+      <div class="ai-weakness-header">
+        <div class="ai-weakness-title">Tóm tắt điểm yếu lớp học (AI)</div>
+        <button type="button" class="btn-ai-weakness" id="btn-dash-ai-weakness" onclick="handleAnalyzeDashboardWeakness()">Tạo tóm tắt điểm yếu</button>
+      </div>
+      <div id="dash-ai-weakness-body">
+        <div class="ai-weakness-empty">Bấm <strong>Tạo tóm tắt điểm yếu</strong> để AI tổng hợp các câu hỏi lớp dễ sai và gợi ý nội dung ôn tập.</div>
+      </div>
+    </div>
+
     <!-- BẢNG 1: DANH SÁCH DẠNG KÉO THEO CÂU HỎI (KÉO KHI > 5 CÂU) -->
     <div class="stats-section-block" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px;">
       <div class="stats-section-title" style="font-size: 1.25rem; font-weight: 850; color: #0f172a;">📋 Thống kê tỷ lệ theo từng câu hỏi</div>
@@ -308,6 +319,7 @@
 
   <script src="js/auth-client.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/ai-weakness-ui.js"></script>
   <script src="js/dashboard.js"></script>
 </body>
 </html>

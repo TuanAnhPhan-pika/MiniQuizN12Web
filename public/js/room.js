@@ -7,10 +7,10 @@ let QUESTIONS = [
   { text: 'Con nào biết bay?',    choices: ['Heo','Chó','Cú','Bò'], correct: 2 }
 ];
 
-const LETTERS        = ['A','B','C','D'];
+const LETTERS        = ['A','B','C','D','E','F','G'];
 const MAX_SCORE      = 100;
 let TIMER_SECS       = 15;
-const TICK_MS        = 500;
+const TICK_MS        = 250;
 
 const params   = new URLSearchParams(location.search);
 const PIN      = params.get('pin')  || '---';
@@ -65,11 +65,48 @@ let playerStateInterval = null;
 let isRevealing   = false;
 let ticksElapsed  = 0;
 let answered      = false;
+let timedOutLocked = false;
 let earnedThisQ   = 0;   // điểm tính từ lúc bấm — lưu lại khi timer vẫn chạy
 let selectedChoice = -1;  // lưu lựa chọn của người chơi, chỉ hiển thị đúng/sai khi hết giờ
-let userAnswers   = [];   // lưu lịch sử làm bài chi tiết { questionIndex, userChoice, isCorrect, earned, timeSpent }
+let selectedChoices = []; // mảng đáp án đã chọn cho câu nhiều đáp án
+let serverClockOffset = 0;   // serverNow - Date.now() (UTC offset sync)
+let questionDeadlineMs = 0;  // server UTC timestamp khi hết giờ câu hiện tại
+let questionStartedAtMs = 0; // server UTC timestamp khi bắt đầu câu hiện tại
+let localQuestionStartMs = 0;
+let userAnswers   = [];   // lưu lịch sử làm bài chi tiết { questionIndex, questionType, userChoice, userChoices, correctChoices, isCorrect, earned }
 let lastSortedRank = [];  // lưu bảng xếp hạng cuối cùng
 let myFinalRank   = 1;
+
+function getCorrectChoices(q) {
+  if (!q) return [];
+  const maxLen = Array.isArray(q.choices) ? q.choices.length : 10;
+  if (Array.isArray(q.correctChoices) && q.correctChoices.length > 0) {
+    return Array.from(new Set(q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen))).sort((a, b) => a - b);
+  }
+  if (typeof q.correct === 'number' && Number.isInteger(q.correct) && q.correct >= 0 && q.correct < maxLen) {
+    return [q.correct];
+  }
+  return [];
+}
+
+function isMultiQuestion(q) {
+  return Boolean(q && (q.isMultiple || getCorrectChoices(q).length > 1));
+}
+
+function syncServerClock(data) {
+  if (!data || typeof data !== 'object') return;
+  if (typeof data.serverNow === 'number' && data.serverNow > 0) {
+    serverClockOffset = data.serverNow - Date.now();
+  }
+  if (Number(data.currentQ) === currentQ) {
+    if (typeof data.questionDeadline === 'number' && data.questionDeadline > 0) {
+      questionDeadlineMs = data.questionDeadline;
+    }
+    if (typeof data.questionStartedAt === 'number' && data.questionStartedAt > 0) {
+      questionStartedAtMs = data.questionStartedAt;
+    }
+  }
+}
 
 /* ════════════════════════════════════════════
    INIT
@@ -156,6 +193,7 @@ async function syncRoomFromServer() {
         if (data.room.timePerQ) {
           TIMER_SECS = Number(data.room.timePerQ) || 15;
         }
+        syncServerClock(data.room);
         if (data.room.phase === 'finished' || data.room.status === 'finished') {
           isFinished = true;
         }
@@ -297,7 +335,7 @@ function escapeHtml(str) {
 /* ════════════════════════════════════════════
    QUESTION LOADER
    ════════════════════════════════════════════ */
-function loadQuestion(idx) {
+function loadQuestion(idx, roomTiming = null) {
   if (revealTimeout) clearTimeout(revealTimeout);
   if (timerStartTimeout) clearTimeout(timerStartTimeout);
   if (autoNextTimeout) {
@@ -311,22 +349,45 @@ function loadQuestion(idx) {
   isRevealing    = false;
   currentQ       = idx;
   answered       = false;
+  timedOutLocked = false;
   ticksElapsed   = 0;
   earnedThisQ    = 0;
   selectedChoice = -1;
+  selectedChoices = [];
   closedQuestionResult = null;
+  localQuestionStartMs = Date.now();
+  if (roomTiming) {
+    syncServerClock(roomTiming);
+  } else if (idx > 0) {
+    questionDeadlineMs = 0;
+    questionStartedAtMs = 0;
+  }
 
-  const q = QUESTIONS[idx];
+  const q = QUESTIONS[idx] || {};
+  const isMulti = isMultiQuestion(q);
   document.getElementById('question-meta').textContent = 'Câu ' + (idx+1) + ' / ' + QUESTIONS.length;
-  document.getElementById('question-text').textContent = q.text;
+  document.getElementById('question-text').textContent = q.text || '';
+
+  const hintEl = document.getElementById('question-type-hint');
+  if (hintEl) hintEl.style.display = isMulti ? 'inline-block' : 'none';
+
+  const submitMultiBtn = document.getElementById('btn-submit-multi');
+  if (submitMultiBtn) {
+    submitMultiBtn.style.display = isMulti ? 'block' : 'none';
+    submitMultiBtn.disabled = true;
+    submitMultiBtn.textContent = '✓ Xác nhận đáp án';
+  }
 
   const choicesEl = document.getElementById('choices');
   choicesEl.innerHTML = '';
-  q.choices.forEach(function(text, i) {
+  (q.choices || []).forEach(function(text, i) {
     const btn = document.createElement('button');
     btn.className = 'choice-btn';
-    btn.innerHTML = '<span class="letter">' + LETTERS[i] + '</span>' + text;
-    btn.addEventListener('click', function() { selectAnswer(i); });
+    btn.innerHTML = '<span class="letter">' + (LETTERS[i] || (i+1)) + '</span>' + escapeHtml(text);
+    btn.addEventListener('click', function() {
+      if (isMulti) toggleMultiChoice(i);
+      else selectAnswer(i);
+    });
     choicesEl.appendChild(btn);
   });
 
@@ -351,6 +412,7 @@ function startPlayerStateTracking() {
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
+          syncServerClock(data);
           // Only server phase/status authorize result and navigation.
           if (data.status === 'finished') {
             clearInterval(playerStateInterval);
@@ -362,7 +424,7 @@ function startPlayerStateTracking() {
             return;
           }
           if (data.phase === 'question' && data.currentQ > currentQ) {
-            loadQuestion(data.currentQ);
+            loadQuestion(data.currentQ, data);
             return;
           }
           if (!isRevealing && data.phase === 'result' && data.currentQ === currentQ) {
@@ -377,18 +439,31 @@ function startPlayerStateTracking() {
 /* ════════════════════════════════════════════
    TIMER
    ════════════════════════════════════════════ */
+function getCurrentQuestionLimitSecs() {
+  const q = QUESTIONS[currentQ] || {};
+  return Number(q.timeLimit) || TIMER_SECS || 15;
+}
+
 function resetTimerBar() {
   const bar = document.getElementById('timer-bar');
   const secs = document.getElementById('timer-secs');
+  const limitSecs = getCurrentQuestionLimitSecs();
   // Tắt transition để thanh lập tức tràn đầy 100%, không bị lấp dần từ từ
   bar.style.transition = 'none';
   bar.style.width = '100%';
   bar.classList.remove('warning', 'danger');
-  secs.textContent = TIMER_SECS;
+  secs.textContent = limitSecs;
   // Kích hoạt reflow để trình duyệt cập nhật ngay lập tức
   void bar.offsetWidth;
   // Bật lại transition cho hiệu ứng đếm ngược mượt mà
-  bar.style.transition = 'width .5s linear, background .5s';
+  bar.style.transition = 'width .25s linear, background .35s';
+}
+
+function lockQuestionInputsOnTimeout() {
+  timedOutLocked = true;
+  document.querySelectorAll('.choice-btn').forEach(b => { b.disabled = true; });
+  const submitMultiBtn = document.getElementById('btn-submit-multi');
+  if (submitMultiBtn) submitMultiBtn.disabled = true;
 }
 
 function startTimer() {
@@ -398,32 +473,48 @@ function startTimer() {
     timerStartTimeout = null;
   }
 
+  const limitSecs = getCurrentQuestionLimitSecs();
+  const limitMs = limitSecs * 1000;
   // Đặt thanh thời gian đầy mặc định ngay lập tức
   resetTimerBar();
 
-  // Đếm ngược sẽ bắt đầu sau 0.25 giây (250ms) delay
+  // Đếm ngược sẽ bắt đầu sau 0.25 giây (250ms) delay cho local fallback
   timerStartTimeout = setTimeout(function() {
+    const fallbackStartMs = Date.now();
     timerInterval = setInterval(function() {
       ticksElapsed++;
-      const secsLeft = Math.max(0, TIMER_SECS - ticksElapsed * (TICK_MS / 1000));
-      updateTimerUI(secsLeft);
+      let remainingMs;
+      if (PIN && PIN !== '---' && !localPractice && questionDeadlineMs > 0) {
+        const estServerNow = Date.now() + serverClockOffset;
+        remainingMs = Math.min(limitMs, Math.max(0, questionDeadlineMs - estServerNow));
+      } else {
+        remainingMs = Math.max(0, limitMs - (Date.now() - fallbackStartMs));
+      }
+      const secsLeft = remainingMs / 1000;
+      updateTimerUI(secsLeft, limitSecs);
 
-      if (ticksElapsed >= TIMER_SECS * (1000 / TICK_MS)) {
+      if (remainingMs <= 0) {
         clearInterval(timerInterval);
-        // Timer hết — nếu chưa ai bấm: 0 điểm; nếu đã bấm: dùng earnedThisQ đã lưu
-        if (!PIN || PIN === '---' || localPractice) revealAndShow();
-        else document.querySelectorAll('.choice-btn').forEach(b => { b.disabled = true; });
+        timerInterval = null;
+        // Timer hết trên client -> khóa chọn đáp án ngay lập tức (server vẫn có 2s ân hạn cho request đang gửi)
+        if (!PIN || PIN === '---' || localPractice) {
+          lockQuestionInputsOnTimeout();
+          revealAndShow();
+        } else {
+          lockQuestionInputsOnTimeout();
+        }
       }
     }, TICK_MS);
   }, 250);
 }
 
-function updateTimerUI(secsLeft) {
+function updateTimerUI(secsLeft, limitSecs) {
+  const totalSecs = limitSecs || getCurrentQuestionLimitSecs();
   const bar  = document.getElementById('timer-bar');
   const secs = document.getElementById('timer-secs');
-  const pct  = (secsLeft / TIMER_SECS) * 100;
+  const pct  = Math.max(0, Math.min(100, (secsLeft / totalSecs) * 100));
   bar.style.width = pct + '%';
-  secs.textContent = Math.ceil(secsLeft);
+  secs.textContent = Math.max(0, Math.ceil(secsLeft));
   bar.classList.remove('warning','danger');
   if (pct <= 30) bar.classList.add('danger');
   else if (pct <= 60) bar.classList.add('warning');
@@ -435,19 +526,134 @@ function updateTimerUI(secsLeft) {
 let closedQuestionResult = null;
 let resultFetchPending = false;
 
-function selectAnswer(choiceIdx) {
-  if (answered) return;
+function getElapsedResponseMs() {
+  if (PIN && PIN !== '---' && !localPractice && questionStartedAtMs > 0) {
+    return Math.max(0, Math.round((Date.now() + serverClockOffset) - questionStartedAtMs));
+  }
+  return Math.max(0, Date.now() - localQuestionStartMs);
+}
+
+async function postAnswerToServer(payload, submittedQ) {
+  try {
+    const r = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-token': payload.playerToken || myPlayerToken
+      },
+      body: JSON.stringify(payload)
+    });
+    const res = await r.json();
+    if (res && res.success && currentQ === submittedQ) {
+      document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
+      return;
+    }
+    if (res && res.timedOut && currentQ === submittedQ) {
+      answered = false;
+      lockQuestionInputsOnTimeout();
+      document.getElementById('question-meta').textContent = '⏰ Đã hết thời gian trả lời câu hỏi!';
+      return;
+    }
+    if (res && res.unauthorized) {
+      const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR, playerToken: myPlayerToken })
+      });
+      if (jRes.ok) {
+        const jData = await jRes.json();
+        if (jData.player?.playerToken) {
+          myPlayerToken = jData.player.playerToken;
+          sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
+          payload.playerToken = myPlayerToken;
+          const retryR = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-player-token': myPlayerToken },
+            body: JSON.stringify(payload)
+          });
+          const retryRes = await retryR.json();
+          if (retryRes && retryRes.success && currentQ === submittedQ) {
+            document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
+          } else if (retryRes && retryRes.timedOut && currentQ === submittedQ) {
+            answered = false;
+            lockQuestionInputsOnTimeout();
+            document.getElementById('question-meta').textContent = '⏰ Đã hết thời gian trả lời câu hỏi!';
+          }
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+function toggleMultiChoice(choiceIdx) {
+  if (answered || timedOutLocked) return;
+  const idxPos = selectedChoices.indexOf(choiceIdx);
+  const btns = document.querySelectorAll('.choice-btn');
+  if (idxPos >= 0) {
+    selectedChoices.splice(idxPos, 1);
+    if (btns[choiceIdx]) btns[choiceIdx].classList.remove('selected');
+  } else {
+    selectedChoices.push(choiceIdx);
+    selectedChoices.sort((a, b) => a - b);
+    if (btns[choiceIdx]) btns[choiceIdx].classList.add('selected');
+  }
+  const submitMultiBtn = document.getElementById('btn-submit-multi');
+  if (submitMultiBtn) {
+    submitMultiBtn.disabled = selectedChoices.length === 0;
+  }
+}
+
+function submitMultiAnswer() {
+  if (answered || timedOutLocked || selectedChoices.length === 0) return;
   answered = true;
-  selectedChoice = choiceIdx;
+  selectedChoice = selectedChoices[0] ?? -1;
 
   earnedThisQ = 0;
   const submittedQ = currentQ;
-  if (localPractice) earnedThisQ = calcScore();
+  const q = QUESTIONS[currentQ] || {};
+  if (localPractice || !PIN || PIN === '---') {
+    const corr = getCorrectChoices(q);
+    const isCorr = corr.length > 0 &&
+      selectedChoices.length === corr.length &&
+      selectedChoices.every((val, i) => val === corr[i]);
+    earnedThisQ = isCorr ? calcScore() : 0;
+  }
+
+  document.querySelectorAll('.choice-btn').forEach(b => { b.disabled = true; });
+  const submitMultiBtn = document.getElementById('btn-submit-multi');
+  if (submitMultiBtn) {
+    submitMultiBtn.disabled = true;
+    submitMultiBtn.textContent = '✓ Đã gửi đáp án';
+  }
+
+  if (PIN && PIN !== '---') {
+    const payload = {
+      id: myPlayerId,
+      playerId: myPlayerId,
+      playerToken: myPlayerToken,
+      nick: NICKNAME,
+      qIdx: currentQ,
+      choices: [...selectedChoices],
+      responseTimeMs: getElapsedResponseMs()
+    };
+    postAnswerToServer(payload, submittedQ);
+  }
+}
+
+function selectAnswer(choiceIdx) {
+  if (answered || timedOutLocked) return;
+  answered = true;
+  selectedChoice = choiceIdx;
+  selectedChoices = [choiceIdx];
+
+  earnedThisQ = 0;
+  const submittedQ = currentQ;
+  if (localPractice || !PIN || PIN === '---') earnedThisQ = calcScore();
 
   /* Chỉ highlight lựa chọn, không hiện đúng/sai cho đến khi hết giờ */
   const btns = document.querySelectorAll('.choice-btn');
   btns.forEach(function(b) { b.disabled = true; });
-  btns[choiceIdx].classList.add('selected');
+  if (btns[choiceIdx]) btns[choiceIdx].classList.add('selected');
 
   // Gửi lựa chọn đáp án thời gian thực lên máy chủ để chủ phòng theo dõi và xác thực điểm
   if (PIN && PIN !== '---') {
@@ -458,51 +664,9 @@ function selectAnswer(choiceIdx) {
       nick: NICKNAME,
       qIdx: currentQ,
       choice: choiceIdx,
-      responseTimeMs: Math.round(ticksElapsed * 25)
+      responseTimeMs: getElapsedResponseMs()
     };
-
-    const sendAnswer = async (p) => {
-      try {
-        const r = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-player-token': p.playerToken || myPlayerToken
-          },
-          body: JSON.stringify(p)
-        });
-        const res = await r.json();
-        if (res && res.success && currentQ === submittedQ) {
-          document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
-        } else if (res && (res.unauthorized || res.rejected)) {
-          // Tự động kết nối lại nếu token cần cập nhật
-          const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: myPlayerId, nick: NICKNAME, av: AVATAR, playerToken: myPlayerToken })
-          });
-          if (jRes.ok) {
-            const jData = await jRes.json();
-            if (jData.player?.playerToken) {
-              myPlayerToken = jData.player.playerToken;
-              sessionStorage.setItem('mqc_my_player_token_' + PIN, myPlayerToken);
-              p.playerToken = myPlayerToken;
-              const retryR = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/answer`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-player-token': myPlayerToken },
-                body: JSON.stringify(p)
-              });
-              const retryRes = await retryR.json();
-              if (retryRes && retryRes.success && currentQ === submittedQ) {
-                document.getElementById('question-meta').textContent = 'Đã ghi nhận đáp án';
-              }
-            }
-          }
-        }
-      } catch (e) {}
-    };
-
-    sendAnswer(payload);
+    postAnswerToServer(payload, submittedQ);
   }
 
   /* Timer vẫn tiếp tục chạy — người chơi phải đợi hết giờ */
@@ -510,7 +674,10 @@ function selectAnswer(choiceIdx) {
 }
 
 function calcScore() {
-  return Math.max(0, MAX_SCORE - ticksElapsed * 2.5);
+  const limitMs = getCurrentQuestionLimitSecs() * 1000;
+  const elapsedMs = Math.min(limitMs, Math.max(0, Date.now() - localQuestionStartMs));
+  const speedFactor = Math.max(0.5, 1 - (elapsedMs / (limitMs * 2)));
+  return Math.round(MAX_SCORE * speedFactor);
 }
 
 /* Multiplayer reveal requires an accepted result response from the server. */
@@ -529,7 +696,14 @@ async function revealAndShow() {
       if (!result.playerResult) return;
       closedQuestionResult = result;
       selectedChoice = result.playerResult.choice;
-      answered = selectedChoice >= 0;
+      if (Array.isArray(result.playerResult.choices) && result.playerResult.choices.length > 0) {
+        selectedChoices = result.playerResult.choices.slice();
+      } else if (selectedChoice >= 0) {
+        selectedChoices = [selectedChoice];
+      } else {
+        selectedChoices = [];
+      }
+      answered = selectedChoices.length > 0 || selectedChoice >= 0;
       earnedThisQ = result.playerResult.scoreEarned;
       totalScore = result.playerResult.totalScore;
     } catch (e) { return; }
@@ -544,40 +718,61 @@ async function revealAndShow() {
 
   const q = QUESTIONS[currentQ] || {};
   const btns = document.querySelectorAll('.choice-btn');
-  btns.forEach(function(b) { b.disabled = true; });
+  btns.forEach(function(b) {
+    b.disabled = true;
+    b.classList.remove('selected');
+  });
+  const submitMultiBtn = document.getElementById('btn-submit-multi');
+  if (submitMultiBtn) submitMultiBtn.disabled = true;
 
-  const correctIndex = closedQuestionResult ? closedQuestionResult.correctChoice
-    : ((!PIN || PIN === '---' || localPractice) && q.correct !== undefined ? q.correct : -1);
+  const isMulti = Boolean((closedQuestionResult && closedQuestionResult.isMultiple) || isMultiQuestion(q));
+  const correctList = closedQuestionResult
+    ? (Array.isArray(closedQuestionResult.correctChoices) && closedQuestionResult.correctChoices.length > 0
+        ? closedQuestionResult.correctChoices
+        : (closedQuestionResult.correctChoice >= 0 ? [closedQuestionResult.correctChoice] : []))
+    : ((!PIN || PIN === '---' || localPractice) ? getCorrectChoices(q) : []);
+  const userList = isMulti
+    ? selectedChoices.slice()
+    : (selectedChoice >= 0 ? [selectedChoice] : []);
 
-  if (!answered) {
+  if (!answered || userList.length === 0) {
     /* Chưa bấm — hết giờ */
     answered = true;
     earnedThisQ = 0;
-    if (correctIndex >= 0 && btns[correctIndex]) {
-      btns[correctIndex].classList.add('reveal-correct');
-    }
+    correctList.forEach(idx => {
+      if (idx >= 0 && btns[idx]) btns[idx].classList.add('reveal-correct');
+    });
     userAnswers.push({
       questionIndex: currentQ,
+      questionType: isMulti ? 'multiple' : 'single',
       userChoice: -1,
+      userChoices: [],
+      correctChoices: correctList,
       isCorrect: false,
       earned: 0
     });
   } else {
     /* Đã bấm — giờ mới hiển thị đúng / sai */
-    if (btns[selectedChoice]) btns[selectedChoice].classList.remove('selected');
-    const isCorr = closedQuestionResult ? closedQuestionResult.playerResult.isCorrect : selectedChoice === correctIndex;
+    const isCorr = closedQuestionResult
+      ? !!closedQuestionResult.playerResult.isCorrect
+      : (isMulti
+          ? (correctList.length > 0 && userList.length === correctList.length && userList.every((v, idx) => v === correctList[idx]))
+          : (userList[0] === correctList[0]));
 
-    if (isCorr) {
-      if (btns[selectedChoice]) btns[selectedChoice].classList.add('correct');
-    } else {
-      if (btns[selectedChoice]) btns[selectedChoice].classList.add('wrong');
-      if (correctIndex >= 0 && btns[correctIndex]) btns[correctIndex].classList.add('reveal-correct');
+    for (let i = 0; i < btns.length; i++) {
+      const picked = userList.includes(i);
+      const isRight = correctList.includes(i);
+      if (picked && isRight) btns[i].classList.add('correct');
+      else if (picked && !isRight) btns[i].classList.add('wrong');
+      else if (!picked && isRight) btns[i].classList.add('reveal-correct');
     }
-
 
     userAnswers.push({
       questionIndex: currentQ,
-      userChoice: selectedChoice,
+      questionType: isMulti ? 'multiple' : 'single',
+      userChoice: userList[0] ?? -1,
+      userChoices: userList,
+      correctChoices: correctList,
       isCorrect: isCorr,
       earned: earnedThisQ
     });
@@ -610,9 +805,13 @@ async function showResult(earned) {
   const isLast   = currentQ === QUESTIONS.length - 1;
 
   /* Result info */
-  const wasCorrect = selectedChoice >= 0 && (closedQuestionResult ? closedQuestionResult.playerResult.isCorrect : earned > 0);
+  const lastAns = userAnswers[userAnswers.length - 1];
+  const hadSelection = (selectedChoices && selectedChoices.length > 0) || selectedChoice >= 0;
+  const wasCorrect = closedQuestionResult
+    ? !!closedQuestionResult.playerResult.isCorrect
+    : !!(lastAns && lastAns.isCorrect);
   document.getElementById('result-title').textContent =
-    wasCorrect ? '✅ Đúng rồi!' : (earnedThisQ === 0 && answered ? '❌ Sai mất rồi!' : '⏰ Hết giờ!');
+    wasCorrect ? '✅ Đúng rồi!' : (hadSelection ? '❌ Sai mất rồi!' : '⏰ Hết giờ!');
   if (closedQuestionResult && closedQuestionResult.explanation) {
     document.getElementById('result-title').textContent += ' ' + closedQuestionResult.explanation;
   }
@@ -845,12 +1044,21 @@ async function saveHistoryRecord(sorted, yourRank) {
   const accuracyPct = Math.round((correctCount / totalQ) * 100);
 
   const details = QUESTIONS.map(function(q, i) {
-    const ans = userAnswers[i] || { userChoice: -1, isCorrect: false, earned: 0 };
+    const ans = userAnswers[i] || { userChoice: -1, userChoices: [], isCorrect: false, earned: 0 };
+    const correctList = (Array.isArray(ans.correctChoices) && ans.correctChoices.length > 0)
+      ? ans.correctChoices
+      : getCorrectChoices(q);
+    const isMulti = Boolean(ans.questionType === 'multiple' || isMultiQuestion(q) || correctList.length > 1);
+    const uChoices = Array.isArray(ans.userChoices) && ans.userChoices.length > 0
+      ? ans.userChoices
+      : (typeof ans.userChoice === 'number' && ans.userChoice >= 0 ? [ans.userChoice] : []);
     return {
       questionText: q.text,
+      questionType: isMulti ? 'multiple' : 'single',
       choices: q.choices,
-      userChoice: ans.userChoice,
-      correctChoice: q.correct,
+      userChoice: typeof ans.userChoice === 'number' ? ans.userChoice : (uChoices[0] ?? -1),
+      ...(isMulti ? { userChoices: uChoices, correctChoices: correctList } : {}),
+      correctChoice: correctList[0] ?? q.correct,
       isCorrect: !!ans.isCorrect,
       earned: Math.round(ans.earned || 0)
     };
@@ -942,24 +1150,33 @@ function showReview() {
   // 4. Detail Questions List (kéo riêng)
   const listEl = document.getElementById('review-questions-scroll');
   listEl.innerHTML = QUESTIONS.map(function(q, i) {
-    const ans = userAnswers[i] || { userChoice: -1, isCorrect: false, earned: 0 };
+    const ans = userAnswers[i] || { userChoice: -1, userChoices: [], isCorrect: false, earned: 0 };
     const isCorr = ans.isCorrect;
+    const uChoices = Array.isArray(ans.userChoices) && ans.userChoices.length > 0
+      ? ans.userChoices
+      : (typeof ans.userChoice === 'number' && ans.userChoice >= 0 ? [ans.userChoice] : []);
+    const correctList = (Array.isArray(ans.correctChoices) && ans.correctChoices.length > 0)
+      ? ans.correctChoices
+      : getCorrectChoices(q);
+
     const statusBadge = isCorr
       ? '<span class="badge badge-correct">✓ Đúng (+' + Math.round(ans.earned) + 'đ)</span>'
-      : (ans.userChoice === -1
+      : (uChoices.length === 0
           ? '<span class="badge badge-wrong">⏰ Hết giờ (0đ)</span>'
           : '<span class="badge badge-wrong">✗ Sai (0đ)</span>');
 
-    const userText = ans.userChoice >= 0
-      ? LETTERS[ans.userChoice] + '. ' + q.choices[ans.userChoice]
+    const userText = uChoices.length > 0
+      ? uChoices.map(idx => (LETTERS[idx] || (idx + 1)) + '. ' + escapeHtml((q.choices && q.choices[idx]) || '')).join(', ')
       : 'Không chọn';
 
-    const correctText = LETTERS[q.correct] + '. ' + q.choices[q.correct];
+    const correctText = correctList.length > 0
+      ? correctList.map(idx => (LETTERS[idx] || (idx + 1)) + '. ' + escapeHtml((q.choices && q.choices[idx]) || '')).join(', ')
+      : 'Không xác định';
 
     return '<div class="review-question-card ' + (isCorr ? 'card-correct' : 'card-wrong') + '">'
       + '<div class="rq-header">'
       + '  <span class="rq-num">Câu ' + (i+1) + ':</span>'
-      + '  <span class="rq-title">' + q.text + '</span>'
+      + '  <span class="rq-title">' + escapeHtml(q.text) + '</span>'
       + '  ' + statusBadge
       + '</div>'
       + '<div class="rq-body">'

@@ -7,6 +7,7 @@ const auth = require('./auth.js');
 const db   = require('./db/index.js');
 const { runMigration } = require('./db/migrate.js');
 const roomsManager = require('./rooms/manager.js');
+const aiService = require('./ai/gemini.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const STATIC_DIR = path.join(ROOT, 'public');
@@ -52,7 +53,10 @@ function canonicalizeQuestion(q) {
   if (!q) return '';
   const text = String(q.text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const choices = (q.choices || []).map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' '));
-  const correctText = choices[q.correct] || '';
+  const correctList = Array.isArray(q.correctChoices) && q.correctChoices.length > 0
+    ? [...q.correctChoices].sort((a, b) => a - b)
+    : (typeof q.correct === 'number' ? [q.correct] : []);
+  const correctText = correctList.map(i => choices[i] || '').sort().join('|');
   const sortedChoices = [...choices].sort().join('|');
   return `q:${text}#c:${correctText}#ch:${sortedChoices}`;
 }
@@ -630,13 +634,22 @@ const server = http.createServer(async (req, res) => {
           const ansRecord = rawRoom.answers && rawRoom.answers[qIdx] && rawRoom.answers[qIdx][player.id];
           const isCorrect = ansRecord ? !!ansRecord.isCorrect : false;
           if (isCorrect) correctCount++;
+          const isMulti = roomsManager.isMultiChoiceQuestion(q);
+          const correctChoices = roomsManager.getCorrectChoices(q);
+          const fallbackAns = (body.details && body.details[qIdx]) || {};
+          const userChoices = ansRecord
+            ? (Array.isArray(ansRecord.choices) ? ansRecord.choices : (typeof ansRecord.choice === 'number' && ansRecord.choice >= 0 ? [ansRecord.choice] : []))
+            : (Array.isArray(fallbackAns.userChoices) ? fallbackAns.userChoices : (typeof fallbackAns.userChoice === 'number' && fallbackAns.userChoice >= 0 ? [fallbackAns.userChoice] : []));
           answersDetail.push({
             questionIndex: qIdx,
+            questionType: isMulti ? 'multiple' : 'single',
             questionText: q.text || q.questionText || '',
             choices: Array.isArray(q.choices) ? q.choices : [],
-            correctChoice: typeof q.correct === 'number' ? q.correct : (q.correctChoice ?? -1),
+            correctChoice: correctChoices[0] ?? (typeof q.correct === 'number' ? q.correct : (q.correctChoice ?? -1)),
+            correctChoices: correctChoices,
             questionVersionId: q.versionId || null,
-            userChoice: ansRecord ? ansRecord.choice : (body.details && body.details[qIdx] ? body.details[qIdx].userChoice : -1),
+            userChoice: ansRecord ? ansRecord.choice : (fallbackAns.userChoice !== undefined ? fallbackAns.userChoice : -1),
+            userChoices: userChoices,
             isCorrect: isCorrect,
             earned: ansRecord ? ansRecord.scoreAwarded : 0,
             scoreAwarded: ansRecord ? ansRecord.scoreAwarded : 0,
@@ -694,12 +707,21 @@ const server = http.createServer(async (req, res) => {
               const incomingAns = Array.isArray(body.details) ? body.details : [];
               const questionsDetail = qStats.map((qs, i) => {
                 const inAns = incomingAns[i] || {};
+                const corrChoices = Array.isArray(qs.correctIndices) && qs.correctIndices.length > 0
+                  ? qs.correctIndices
+                  : (qs.correctIndex !== undefined ? [qs.correctIndex] : (Array.isArray(inAns.correctChoices) ? inAns.correctChoices : []));
+                const usrChoices = Array.isArray(inAns.userChoices)
+                  ? inAns.userChoices
+                  : (typeof inAns.userChoice === 'number' && inAns.userChoice >= 0 ? [inAns.userChoice] : []);
                 return {
                   questionIndex: i,
+                  questionType: (qs.isMultiple || corrChoices.length > 1) ? 'multiple' : 'single',
                   questionText: qs.text || '',
                   choices: inAns.choices || [],
                   correctChoice: qs.correctIndex !== undefined ? qs.correctIndex : inAns.correctChoice,
+                  correctChoices: corrChoices,
                   userChoice: inAns.userChoice !== undefined ? inAns.userChoice : -1,
+                  userChoices: usrChoices,
                   isCorrect: inAns.isCorrect !== undefined ? !!inAns.isCorrect : (cand && cand.answersMap ? cand.answersMap[i] : false),
                   earned: inAns.earned || 0
                 };
@@ -747,8 +769,16 @@ const server = http.createServer(async (req, res) => {
           for (let i = 0; i < totalQuestions; i++) {
             const q = quiz.questions[i];
             const ans = incomingAnswers[i] || {};
-            const userChoice = typeof ans.userChoice === 'number' ? ans.userChoice : (typeof ans.choice === 'number' ? ans.choice : -1);
-            const isCorrect = (typeof q.correct === 'number' && userChoice === q.correct);
+            const isMulti = roomsManager.isMultiChoiceQuestion(q);
+            const correctChoices = roomsManager.getCorrectChoices(q);
+            const rawChoices = Array.isArray(ans.userChoices)
+              ? ans.userChoices
+              : (typeof ans.userChoice === 'number' && ans.userChoice >= 0 ? [ans.userChoice] : (typeof ans.choice === 'number' && ans.choice >= 0 ? [ans.choice] : []));
+            const userChoices = Array.from(new Set(rawChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < (q.choices || []).length))).sort((a, b) => a - b);
+            const userChoice = userChoices.length > 0 ? userChoices[0] : -1;
+            const isCorrect = isMulti
+              ? (correctChoices.length > 0 && userChoices.length === correctChoices.length && userChoices.every((v, idx) => v === correctChoices[idx]))
+              : (correctChoices.length > 0 && userChoice === correctChoices[0]);
             const points = q.points || quiz.pointsPerQ || 100;
             const earned = isCorrect ? points : 0;
             if (isCorrect) correctCount++;
@@ -756,11 +786,14 @@ const server = http.createServer(async (req, res) => {
 
             answersDetail.push({
               questionIndex: i,
+              questionType: isMulti ? 'multiple' : 'single',
               questionText: q.text || '',
               choices: Array.isArray(q.choices) ? q.choices : [],
-              correctChoice: typeof q.correct === 'number' ? q.correct : -1,
+              correctChoice: correctChoices[0] ?? (typeof q.correct === 'number' ? q.correct : -1),
+              correctChoices,
               questionVersionId: q.versionId || null,
               userChoice,
+              userChoices,
               isCorrect,
               earned,
               scoreAwarded: earned,
@@ -807,12 +840,21 @@ const server = http.createServer(async (req, res) => {
           const earned = isCorrect ? (Number(ans.earned) || 100) : 0;
           if (isCorrect) correctCount++;
           calculatedScore += earned;
+          const corrChoices = Array.isArray(ans.correctChoices)
+            ? ans.correctChoices
+            : (typeof ans.correctChoice === 'number' && ans.correctChoice >= 0 ? [ans.correctChoice] : []);
+          const usrChoices = Array.isArray(ans.userChoices)
+            ? ans.userChoices
+            : (typeof ans.userChoice === 'number' && ans.userChoice >= 0 ? [ans.userChoice] : []);
           return {
             questionIndex: i,
+            questionType: (ans.questionType === 'multiple' || corrChoices.length > 1) ? 'multiple' : 'single',
             questionText: ans.questionText || `Câu ${i + 1}`,
             choices: Array.isArray(ans.choices) ? ans.choices : [],
-            correctChoice: typeof ans.correctChoice === 'number' ? ans.correctChoice : -1,
-            userChoice: typeof ans.userChoice === 'number' ? ans.userChoice : -1,
+            correctChoice: typeof ans.correctChoice === 'number' ? ans.correctChoice : (corrChoices[0] ?? -1),
+            correctChoices: corrChoices,
+            userChoice: typeof ans.userChoice === 'number' ? ans.userChoice : (usrChoices[0] ?? -1),
+            userChoices: usrChoices,
             isCorrect,
             earned,
             responseTimeMs: Number(ans.responseTimeMs) || 0
@@ -1272,8 +1314,11 @@ const server = http.createServer(async (req, res) => {
         }
         const answer = rawRoom.answers[qIdx]?.[player.id];
         const before = rawRoom.scoreSnapshots?.get(qIdx)?.get(player.id);
+        const questionForPlayer = rawRoom.questions[qIdx];
+        const isMultiForPlayer = roomsManager.isMultiChoiceQuestion(questionForPlayer);
         playerResult = {
           choice: answer ? answer.choice : -1,
+          ...(isMultiForPlayer ? { choices: answer && Array.isArray(answer.choices) ? answer.choices : [] } : {}),
           isCorrect: answer ? answer.isCorrect : false,
           scoreEarned: answer ? answer.scoreAwarded : 0,
           totalScore: answer ? answer.totalScoreAfter : (before?.score || 0),
@@ -1281,13 +1326,22 @@ const server = http.createServer(async (req, res) => {
         };
       }
       const question = rawRoom.questions[qIdx];
+      const isMulti = roomsManager.isMultiChoiceQuestion(question);
+      const correctChoices = roomsManager.getCorrectChoices(question);
       const distribution = new Array(question.choices.length).fill(0);
       for (const answer of Object.values(rawRoom.answers[qIdx] || {})) {
-        if (Number.isInteger(answer.choice) && answer.choice >= 0 && answer.choice < distribution.length) distribution[answer.choice]++;
+        const picked = Array.isArray(answer.choices) ? answer.choices : (Number.isInteger(answer.choice) ? [answer.choice] : []);
+        for (const c of picked) {
+          if (Number.isInteger(c) && c >= 0 && c < distribution.length) distribution[c]++;
+        }
       }
+      const correctText = isMulti
+        ? correctChoices.map(idx => question.choices[idx] || '').filter(Boolean).join(', ')
+        : (question.choices[question.correct] || '');
       sendJSON(res, 200, {
-        success: true, qIdx, correctChoice: question.correct,
-        correctText: question.choices[question.correct] || '',
+        success: true, qIdx, correctChoice: correctChoices[0] ?? question.correct,
+        ...(isMulti ? { isMultiple: true, correctChoices } : {}),
+        correctText,
         explanation: question.explanation || '', distribution,
         ...(playerResult ? { playerResult } : {}),
       });
@@ -1312,6 +1366,7 @@ const server = http.createServer(async (req, res) => {
         success: true,
         status: currentStatus,
         countdown: remainingSec,
+        serverNow: Date.now(),
         title: rawRoom.title,
         pin: rawRoom.pin,
         isLocked: !!rawRoom.isLocked,
@@ -1341,9 +1396,14 @@ const server = http.createServer(async (req, res) => {
         const idKey = ans.playerId || ans.nick;
         if (idKey && !countedIds.has(idKey)) {
           countedIds.add(idKey);
-          if (typeof ans.choice === 'number' && ans.choice >= 0 && ans.choice < choicesLen) {
-            choicesCount[ans.choice]++;
-          }
+          const picked = Array.isArray(ans.choices)
+            ? ans.choices
+            : (typeof ans.choice === 'number' ? [ans.choice] : []);
+          picked.forEach(c => {
+            if (Number.isInteger(c) && c >= 0 && c < choicesLen) {
+              choicesCount[c]++;
+            }
+          });
         }
       });
 
@@ -1373,6 +1433,11 @@ const server = http.createServer(async (req, res) => {
       });
       const answeredCount = countedIds.size;
       const totalCandidates = Math.max(candidates.length, answeredCount);
+      const now = Date.now();
+      const activeQ = (rawRoom.questions && rawRoom.questions[q]) || null;
+      const qTimeLimitMs = ((activeQ && activeQ.timeLimit) || 15) * 1000;
+      const qStartedAt = rawRoom.questionStartedAt || rawRoom.phaseStartedAt || 0;
+      const qDeadline = qStartedAt ? (qStartedAt + qTimeLimitMs) : 0;
 
       sendJSON(res, 200, {
         success: true,
@@ -1383,7 +1448,10 @@ const server = http.createServer(async (req, res) => {
         totalAnswered: answeredCount,
         totalCandidates,
         totalQuestions: (rawRoom.questions || []).length,
-        phaseStartedAt: rawRoom.phaseStartedAt || 0
+        phaseStartedAt: rawRoom.phaseStartedAt || 0,
+        questionStartedAt: qStartedAt,
+        questionDeadline: qDeadline,
+        serverNow: now
       });
       return;
     }
@@ -1511,6 +1579,7 @@ const server = http.createServer(async (req, res) => {
       nick: body.nick,
       qIdx: Number(body.qIdx) || 0,
       choice: Number(body.choice),
+      choices: Array.isArray(body.choices) ? body.choices : undefined,
       responseTimeMs: Number(body.responseTimeMs) || 0
     });
     sendJSON(res, 200, result);
@@ -1600,6 +1669,293 @@ const server = http.createServer(async (req, res) => {
       publicUrl
     });
     return;
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // AI ASSISTANT ENDPOINTS (Google Gemini Backend Proxy)
+  // ══════════════════════════════════════════════════════════
+
+  // [POST] /api/ai/generate-questions - Chỉ người tạo đề / giáo viên đã đăng nhập
+  if (method === 'POST' && pathname === '/api/ai/generate-questions') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Vui lòng đăng nhập để sử dụng tính năng tạo câu hỏi AI.' });
+      return;
+    }
+    if (sessionUser.role === 'student') {
+      sendJSON(res, 403, { success: false, message: 'Chỉ tài khoản giáo viên hoặc người tạo đề mới được sử dụng tính năng AI.' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const topic = String(body?.topic || '').trim();
+      const gradeOrLevel = String(body?.gradeOrLevel || '').trim();
+      const count = Math.max(1, Math.min(15, Number(body?.count) || 5));
+      const questionType = ['single', 'multiple', 'mixed'].includes(body?.questionType) ? body.questionType : 'mixed';
+
+      if (topic.length < 2) {
+        sendJSON(res, 400, { success: false, message: 'Vui lòng nhập chủ đề tối thiểu 2 ký tự.' });
+        return;
+      }
+
+      const rate = aiService.checkAiRateLimit(sessionUser.username, getClientIp(req));
+      if (!rate.allowed) {
+        sendJSON(res, 429, { success: false, message: rate.message });
+        return;
+      }
+
+      let docRecord = null;
+      let jobRecord = null;
+      try {
+        if (typeof db.createAiDocument === 'function') {
+          docRecord = await db.createAiDocument({
+            ownerUsername: sessionUser.username,
+            ownerUserId: sessionUser.userId,
+            title: topic.slice(0, 255),
+            filePath: `ai-topic://${questionType}/${gradeOrLevel || 'general'}`,
+            contentText: gradeOrLevel ? `${topic}\nMức độ: ${gradeOrLevel}` : topic,
+          });
+        }
+        if (typeof db.createAiGenerationJob === 'function') {
+          jobRecord = await db.createAiGenerationJob({
+            username: sessionUser.username,
+            accountUserId: sessionUser.userId,
+            status: 'pending',
+            prompt: `[generate-questions] topic=${topic.slice(0, 200)} | count=${count} | type=${questionType}`,
+            resultData: {
+              jobType: 'generate-questions',
+              documentId: docRecord?.id || null,
+              topic: topic.slice(0, 300),
+              gradeOrLevel: gradeOrLevel.slice(0, 80),
+              count,
+              questionType,
+            },
+          });
+        }
+      } catch (dbErr) {
+        console.warn('[AI] Không thể ghi log pending vào DB:', dbErr.message);
+      }
+
+      try {
+        const result = await aiService.generateQuestions({ topic, gradeOrLevel, count, questionType });
+        if (jobRecord?.id && typeof db.updateAiGenerationJob === 'function') {
+          await db.updateAiGenerationJob(jobRecord.id, {
+            status: 'completed',
+            resultData: {
+              jobType: 'generate-questions',
+              documentId: docRecord?.id || null,
+              model: result.model,
+              suggestedTitle: result.suggestedTitle,
+              suggestedSubject: result.suggestedSubject,
+              questions: result.questions,
+            },
+          }).catch(() => {});
+        }
+        sendJSON(res, 200, {
+          success: true,
+          model: result.model,
+          suggestedTitle: result.suggestedTitle,
+          suggestedSubject: result.suggestedSubject,
+          questions: result.questions,
+        });
+        return;
+      } catch (aiErr) {
+        if (jobRecord?.id && typeof db.updateAiGenerationJob === 'function') {
+          await db.updateAiGenerationJob(jobRecord.id, {
+            status: 'failed',
+            resultData: {
+              jobType: 'generate-questions',
+              documentId: docRecord?.id || null,
+              error: aiErr.message,
+            },
+          }).catch(() => {});
+        }
+        sendJSON(res, aiErr.status || 500, { success: false, message: aiErr.message });
+        return;
+      }
+    } catch (err) {
+      sendJSON(res, 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
+      return;
+    }
+  }
+
+  // [POST] /api/ai/analyze-weakness - Chỉ chủ phòng / giáo viên đã đăng nhập
+  if (method === 'POST' && pathname === '/api/ai/analyze-weakness') {
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      sendJSON(res, 401, { success: false, message: 'Vui lòng đăng nhập tài khoản Chủ phòng để xem phân tích AI.' });
+      return;
+    }
+    if (sessionUser.role === 'student') {
+      sendJSON(res, 403, { success: false, message: 'Chỉ chủ phòng thi hoặc giáo viên mới được phân tích điểm yếu lớp học.' });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const pin = String(body?.pin || '').trim();
+      const sessionId = String(body?.sessionId || '').trim();
+      let resolvedTitle = String(body?.roomTitle || '').trim();
+      let resolvedStats = body?.stats && typeof body.stats === 'object' ? body.stats : null;
+      let sessionKey = sessionId || pin || resolvedTitle || 'session';
+
+      if (pin) {
+        const rawRoom = roomsManager.getRawRoom(pin);
+        if (rawRoom) {
+          if (!isRoomHost(sessionUser, rawRoom)) {
+            sendJSON(res, 403, { success: false, message: 'Bạn không phải chủ phòng thi này.' });
+            return;
+          }
+          resolvedStats = roomsManager.calculateExamStats(rawRoom);
+          resolvedTitle = rawRoom.title || resolvedTitle || `Phòng ${pin}`;
+          sessionKey = rawRoom.sessionId || pin;
+        }
+      }
+
+      if (!resolvedStats && sessionId && typeof db.getHostedGameSessionById === 'function') {
+        const sess = await db.getHostedGameSessionById(sessionId);
+        if (!sess) {
+          sendJSON(res, 404, { success: false, message: 'Không tìm thấy dữ liệu phòng thi đã tổ chức.' });
+          return;
+        }
+        const isOwner = (sess.hostId && sess.hostId.toLowerCase() === sessionUser.username.toLowerCase())
+          || (sess.hostUserId && sessionUser.userId && sess.hostUserId === sessionUser.userId)
+          || isAdmin(sessionUser);
+        if (!isOwner) {
+          sendJSON(res, 403, { success: false, message: 'Bạn không có quyền phân tích phòng thi của người khác.' });
+          return;
+        }
+        resolvedStats = sess.stats;
+        resolvedTitle = sess.roomTitle || resolvedTitle;
+        sessionKey = sess.id;
+      } else if (sessionId && typeof db.getHostedGameSessionById === 'function') {
+        // Verify ownership even when client supplied stats snapshot from hosted modal
+        const sess = await db.getHostedGameSessionById(sessionId).catch(() => null);
+        if (sess) {
+          const isOwner = (sess.hostId && sess.hostId.toLowerCase() === sessionUser.username.toLowerCase())
+            || (sess.hostUserId && sessionUser.userId && sess.hostUserId === sessionUser.userId)
+            || isAdmin(sessionUser);
+          if (!isOwner) {
+            sendJSON(res, 403, { success: false, message: 'Bạn không có quyền phân tích phòng thi của người khác.' });
+            return;
+          }
+          if (sess.stats && Array.isArray(sess.stats.questionsStats) && sess.stats.questionsStats.length > 0) {
+            resolvedStats = sess.stats;
+          }
+          resolvedTitle = sess.roomTitle || resolvedTitle;
+          sessionKey = sess.id;
+        }
+      }
+
+      const compressed = aiService.buildWeaknessStatsInput({ roomTitle: resolvedTitle, stats: resolvedStats });
+      if (compressed.questions.length === 0) {
+        sendJSON(res, 400, { success: false, message: 'Chưa có dữ liệu thống kê câu hỏi để phân tích.' });
+        return;
+      }
+
+      const cacheKey = aiService.buildWeaknessCacheKey(sessionKey, compressed);
+      const memCached = aiService.getWeaknessFromMemoryCache(cacheKey);
+      if (memCached) {
+        sendJSON(res, 200, { success: true, model: aiService.DEFAULT_MODEL, cached: true, analysis: memCached });
+        return;
+      }
+
+      if (typeof db.findCachedWeaknessAnalysis === 'function') {
+        try {
+          const dbCached = await db.findCachedWeaknessAnalysis(sessionUser.username, cacheKey);
+          if (dbCached && dbCached.analysis) {
+            aiService.setWeaknessInMemoryCache(cacheKey, dbCached.analysis);
+            sendJSON(res, 200, {
+              success: true,
+              model: dbCached.model || aiService.DEFAULT_MODEL,
+              cached: true,
+              analysis: dbCached.analysis,
+            });
+            return;
+          }
+        } catch (cacheErr) {}
+      }
+
+      const rate = aiService.checkAiRateLimit(sessionUser.username, getClientIp(req));
+      if (!rate.allowed) {
+        sendJSON(res, 429, { success: false, message: rate.message });
+        return;
+      }
+
+      let docRecord = null;
+      let jobRecord = null;
+      try {
+        if (typeof db.createAiDocument === 'function') {
+          docRecord = await db.createAiDocument({
+            ownerUsername: sessionUser.username,
+            ownerUserId: sessionUser.userId,
+            title: `Thống kê: ${compressed.roomTitle}`.slice(0, 255),
+            filePath: `ai-weakness://${sessionKey}`,
+            contentText: JSON.stringify(compressed),
+          });
+        }
+        if (typeof db.createAiGenerationJob === 'function') {
+          jobRecord = await db.createAiGenerationJob({
+            username: sessionUser.username,
+            accountUserId: sessionUser.userId,
+            status: 'pending',
+            prompt: `[weakness-analysis:${sessionKey}] ${compressed.roomTitle}`,
+            resultData: {
+              jobType: 'weakness-analysis',
+              documentId: docRecord?.id || null,
+              cacheKey,
+              sessionKey,
+            },
+          });
+        }
+      } catch (dbErr) {
+        console.warn('[AI] Không thể ghi log weakness job vào DB:', dbErr.message);
+      }
+
+      try {
+        const result = await aiService.analyzeClassWeakness({
+          roomTitle: resolvedTitle,
+          stats: resolvedStats,
+          sessionKey,
+        });
+        if (jobRecord?.id && typeof db.updateAiGenerationJob === 'function') {
+          await db.updateAiGenerationJob(jobRecord.id, {
+            status: 'completed',
+            resultData: {
+              jobType: 'weakness-analysis',
+              documentId: docRecord?.id || null,
+              cacheKey: result.cacheKey,
+              sessionKey,
+              model: result.model,
+              analysis: result.analysis,
+            },
+          }).catch(() => {});
+        }
+        sendJSON(res, 200, {
+          success: true,
+          model: result.model,
+          cached: !!result.cached,
+          analysis: result.analysis,
+        });
+        return;
+      } catch (aiErr) {
+        if (jobRecord?.id && typeof db.updateAiGenerationJob === 'function') {
+          await db.updateAiGenerationJob(jobRecord.id, {
+            status: 'failed',
+            resultData: {
+              jobType: 'weakness-analysis',
+              documentId: docRecord?.id || null,
+              cacheKey,
+              error: aiErr.message,
+            },
+          }).catch(() => {});
+        }
+        sendJSON(res, aiErr.status || 500, { success: false, message: aiErr.message });
+        return;
+      }
+    } catch (err) {
+      sendJSON(res, 400, { success: false, message: err.message || 'Yêu cầu không hợp lệ.' });
+      return;
+    }
   }
 
   // ══════════════════════════════════════════════════════════

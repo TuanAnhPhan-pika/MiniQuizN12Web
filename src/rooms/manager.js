@@ -7,7 +7,28 @@ const db = require('../db/index.js');
 
 const ROOM_EXPIRE_MS = 4 * 60 * 60 * 1000; // 4 giờ
 const MAX_ROOMS_PER_HOST = 3;
+const ANSWER_GRACE_MS = 2000; // 2 giây ân hạn trễ mạng phía server
 const activeRooms = new Map(); // pin -> room object
+
+function getCorrectChoices(question) {
+  if (!question) return [];
+  const maxLen = Array.isArray(question.choices) ? question.choices.length : 100;
+  if (Array.isArray(question.correctChoices) && question.correctChoices.length > 0) {
+    const uniq = Array.from(new Set(
+      question.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen)
+    )).sort((a, b) => a - b);
+    if (uniq.length > 0) return uniq;
+  }
+  if (typeof question.correct === 'number' && Number.isInteger(question.correct) && question.correct >= 0 && question.correct < maxLen) {
+    return [question.correct];
+  }
+  return [];
+}
+
+function isMultiChoiceQuestion(question) {
+  if (!question) return false;
+  return Boolean(question.isMultiple || getCorrectChoices(question).length > 1);
+}
 
 function isUnnaturalTriplet(numStr) {
   if (numStr[0] === numStr[1] && numStr[1] === numStr[2]) return true; // Tránh 111, 222...
@@ -95,6 +116,7 @@ async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40
     phase: 'question',
     currentQ: 0,
     phaseStartedAt: now,
+    questionStartedAt: now,
     countdownEnd: 0,
     createdAt: now,
     questions: questions,
@@ -187,6 +209,12 @@ function getRoomForClient(pin, isHost = false) {
   // Sanitize danh sách players: bảo mật tuyệt đối playerToken
   const sanitizedPlayers = (room.players || []).map(p => sanitizePlayer(p, room, isHost)).filter(Boolean);
 
+  const now = Date.now();
+  const activeQ = (room.questions && room.questions[room.currentQ]) || null;
+  const qTimeLimitMs = ((activeQ && activeQ.timeLimit) || 15) * 1000;
+  const qStartedAt = room.questionStartedAt || room.phaseStartedAt || 0;
+  const qDeadline = qStartedAt ? (qStartedAt + qTimeLimitMs) : 0;
+
   if (isHost) {
     return {
       sessionId: room.sessionId,
@@ -200,6 +228,9 @@ function getRoomForClient(pin, isHost = false) {
       phase: room.phase,
       currentQ: room.currentQ,
       phaseStartedAt: room.phaseStartedAt,
+      questionStartedAt: qStartedAt,
+      questionDeadline: qDeadline,
+      serverNow: now,
       countdownEnd: room.countdownEnd,
       createdAt: room.createdAt,
       players: sanitizedPlayers,
@@ -208,17 +239,25 @@ function getRoomForClient(pin, isHost = false) {
   }
 
   // Sanitize cho thí sinh: ẩn đáp án đúng
-  const sanitizedQuestions = (room.questions || []).map(q => ({
-    id: q.id,
-    versionId: q.versionId,
-    text: q.text,
-    choices: q.choices,
-    ...(room.status === 'finished' ? { explanation: q.explanation || '' } : {}),
-    image: q.image || '',
-    points: q.points || 100,
-    timeLimit: q.timeLimit || 15,
-    ...(room.status === 'finished' ? { correct: q.correct } : {})
-  }));
+  const sanitizedQuestions = (room.questions || []).map(q => {
+    const isMulti = isMultiChoiceQuestion(q);
+    const correctList = getCorrectChoices(q);
+    return {
+      id: q.id,
+      versionId: q.versionId,
+      text: q.text,
+      choices: q.choices,
+      ...(isMulti ? { isMultiple: true } : {}),
+      ...(room.status === 'finished' ? { explanation: q.explanation || '' } : {}),
+      image: q.image || '',
+      points: q.points || 100,
+      timeLimit: q.timeLimit || 15,
+      ...(room.status === 'finished' ? {
+        correct: q.correct,
+        ...(isMulti ? { correctChoices: correctList } : {})
+      } : {})
+    };
+  });
 
   return {
     sessionId: room.sessionId,
@@ -232,6 +271,9 @@ function getRoomForClient(pin, isHost = false) {
     phase: room.phase,
     currentQ: room.currentQ,
     phaseStartedAt: room.phaseStartedAt,
+    questionStartedAt: qStartedAt,
+    questionDeadline: qDeadline,
+    serverNow: now,
     countdownEnd: room.countdownEnd,
     createdAt: room.createdAt,
     players: sanitizedPlayers,
@@ -379,6 +421,7 @@ function startRoom(pin, countdownSec = 5) {
   room.currentQ = 0;
   room.phase = 'question';
   room.phaseStartedAt = room.countdownEnd;
+  room.questionStartedAt = room.countdownEnd;
   return { success: true };
 }
 
@@ -392,10 +435,14 @@ function advanceQuestion(pin, nextQIndex, phase = 'question') {
   if (!Number.isInteger(qNum) || qNum < 0 || (totalQuestions > 0 && qNum >= totalQuestions)) {
     return { success: false, message: 'Chỉ số câu hỏi không hợp lệ' };
   }
-  if (targetPhase === 'question') captureScoreSnapshot(room, qNum);
+  const now = Date.now();
+  if (targetPhase === 'question') {
+    captureScoreSnapshot(room, qNum);
+    room.questionStartedAt = now;
+  }
   room.currentQ = qNum;
   room.phase = targetPhase;
-  room.phaseStartedAt = Date.now();
+  room.phaseStartedAt = now;
   if (room.status !== 'started') room.status = 'started';
   return { success: true };
 }
@@ -409,7 +456,7 @@ function advanceQuestion(pin, nextQIndex, phase = 'question') {
  * 5. Validate choice: phải là số nguyên nằm trong dải [0, question.choices.length - 1].
  * 6. Tính điểm độc quyền ở backend.
  */
-function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
+function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
   const room = getRawRoom(pin);
   if (!room) return { success: false, message: 'Phòng thi không tồn tại' };
 
@@ -423,6 +470,7 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
   if (room.status === 'countdown' || (room.status === 'waiting' && Number(qIdx) === 0)) {
     room.status = 'started';
     if (!room.phaseStartedAt) room.phaseStartedAt = Date.now();
+    if (!room.questionStartedAt) room.questionStartedAt = Date.now();
   }
 
   // Kiểm tra trạng thái phòng thi và câu hỏi
@@ -443,10 +491,24 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     return { success: false, message: 'Dữ liệu câu hỏi không hợp lệ!' };
   }
 
-  // 3. Validate đáp án choice
-  const choiceNum = Number(choice);
-  if (!Number.isInteger(choiceNum) || choiceNum < 0 || choiceNum >= question.choices.length) {
-    return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
+  // 3. Validate đáp án choice / choices
+  const isMulti = isMultiChoiceQuestion(question);
+  let userChoices = [];
+  if (Array.isArray(choices)) {
+    if (choices.length === 0) {
+      return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
+    }
+    const parsed = choices.map(Number);
+    if (parsed.some(c => !Number.isInteger(c) || c < 0 || c >= question.choices.length)) {
+      return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
+    }
+    userChoices = Array.from(new Set(parsed)).sort((a, b) => a - b);
+  } else {
+    const choiceNum = Number(choice);
+    if (!Number.isInteger(choiceNum) || choiceNum < 0 || choiceNum >= question.choices.length) {
+      return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
+    }
+    userChoices = [choiceNum];
   }
 
   // 4. Chống nộp trùng lặp (Anti-duplicate submission)
@@ -457,16 +519,28 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
     return { success: false, duplicate: true, message: 'Bạn đã nộp đáp án cho câu này rồi!' };
   }
 
-  captureScoreSnapshot(room, room.currentQ);
-
-  // 5. Server tự tính responseTimeMs chuẩn xác
+  // 5. Server tự tính responseTimeMs & kiểm tra thời hạn (cho phép trễ mạng tối đa ANSWER_GRACE_MS = 2s)
   const now = Date.now();
-  const rawElapsed = now - (room.phaseStartedAt || now);
+  const startTs = room.questionStartedAt || room.phaseStartedAt || now;
+  const rawElapsed = now - startTs;
   const timeLimitMs = (question.timeLimit || 15) * 1000;
+  if (rawElapsed > timeLimitMs + ANSWER_GRACE_MS) {
+    return { success: false, rejected: true, timedOut: true, message: 'Đã hết thời gian trả lời câu hỏi!' };
+  }
   const serverResponseTimeMs = Math.max(0, Math.min(rawElapsed, timeLimitMs));
 
-  // 6. Chấm điểm server-authoritative
-  const isCorrect = (typeof question.correct === 'number') ? (question.correct === choiceNum) : false;
+  captureScoreSnapshot(room, room.currentQ);
+
+  // 6. Chấm điểm server-authoritative (All-or-Nothing cho câu nhiều đáp án)
+  const correctChoices = getCorrectChoices(question);
+  let isCorrect = false;
+  if (isMulti) {
+    isCorrect = correctChoices.length > 0 &&
+      userChoices.length === correctChoices.length &&
+      userChoices.every((val, i) => val === correctChoices[i]);
+  } else {
+    isCorrect = correctChoices.length > 0 ? (correctChoices[0] === userChoices[0]) : false;
+  }
 
   let scoreAwarded = 0;
   const streakBefore = player.streak || 0;
@@ -496,10 +570,12 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
   player.currentQ = qIdx;
   player.lastUpdated = now;
 
+  const primaryChoice = userChoices[0] ?? -1;
   const record = {
     playerId: player.id,
     nick: player.nick,
-    choice: choiceNum,
+    choice: primaryChoice,
+    ...(isMulti ? { choices: userChoices } : {}),
     isCorrect,
     scoreAwarded,
     totalScoreAfter: Number(player.score) || 0,
@@ -514,7 +590,8 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice }) {
   return {
     success: true,
     qIdx,
-    choice: choiceNum,
+    choice: primaryChoice,
+    ...(isMulti ? { choices: userChoices } : {}),
     answerAccepted: true,
   };
 }
@@ -587,11 +664,18 @@ function calculateExamStats(room) {
     });
     const totalCount = candidates.length;
     const ratioPct = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
+    const correctList = getCorrectChoices(q);
+    const isMulti = isMultiChoiceQuestion(q);
+    const correctText = correctList
+      .map(idx => (q.choices && q.choices[idx] !== undefined) ? q.choices[idx] : '')
+      .filter(Boolean)
+      .join(', ');
     return {
       qIdx: qIdx + 1,
       text: q.text || ('Câu ' + (qIdx + 1)),
-      correctIndex: q.correct,
-      correctText: (q.choices && q.choices[q.correct] !== undefined) ? q.choices[q.correct] : '',
+      correctIndex: correctList[0] ?? q.correct,
+      ...(isMulti ? { correctIndices: correctList, isMultiple: true } : {}),
+      correctText,
       correctCount,
       totalCount,
       ratioPct,
@@ -701,6 +785,9 @@ function countActiveRoomsByHost(hostUsername) {
 
 module.exports = {
   MAX_ROOMS_PER_HOST,
+  ANSWER_GRACE_MS,
+  getCorrectChoices,
+  isMultiChoiceQuestion,
   createRoom,
   getRawRoom,
   getRoomForClient,

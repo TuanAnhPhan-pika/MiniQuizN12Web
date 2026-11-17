@@ -120,7 +120,10 @@
         <div class="editor-card">
           <div class="editor-card-header">
             <div class="editor-card-title">Soạn thảo câu hỏi</div>
-            <span class="page-badge">Đang soạn thảo</span>
+            <div class="editor-header-tools">
+              <button type="button" class="btn-ai-trigger" id="btn-open-ai-gen" onclick="openAiGenerateModal()">Tạo câu hỏi AI</button>
+              <span class="page-badge">Đang soạn thảo</span>
+            </div>
           </div>
 
           <!-- Thông tin chung đề thi -->
@@ -155,6 +158,10 @@
           <!-- Khu vực soạn câu hỏi -->
           <div class="editor-card-header" style="margin-top: 6px;">
             <div class="editor-card-title" id="q-form-heading">➕ Thêm câu hỏi mới</div>
+            <div class="q-type-toggle" id="q-type-toggle" role="group" aria-label="Loại câu hỏi">
+              <button type="button" class="btn-q-type active" id="btn-qtype-single" onclick="setQuestionTypeMode('single')">1 đáp án</button>
+              <button type="button" class="btn-q-type" id="btn-qtype-multiple" onclick="setQuestionTypeMode('multiple')">Nhiều đáp án</button>
+            </div>
           </div>
 
           <div class="form-group">
@@ -294,7 +301,7 @@
             <div class="dropzone-icon">📥</div>
             <div class="dropzone-title">Kéo & thả file đề thi vào đây hoặc <span class="dropzone-browse">chọn từ máy tính</span></div>
             <div class="dropzone-hint">
-              Hệ thống tự động nhận diện câu hỏi: <b>"Câu 1: ... A. B. C. D. Đáp án: A"</b>, hoặc bảng đáp án ở cuối đề (1-A 2-B), hoặc định dạng Moodle/Aiken, hoặc bảng tính Excel.
+              Hệ thống tự động nhận diện câu hỏi 1 hoặc nhiều đáp án: <b>"Câu 1: ... A. B. C. D. Đáp án: A, C"</b>, đánh dấu <b>*A. *C.</b>, bảng đáp án cuối đề (1-A,C), Moodle/Aiken hoặc bảng tính Excel.
             </div>
           </div>
         </div>
@@ -302,7 +309,7 @@
         <!-- Mode 2: Direct Text Area -->
         <div id="import-mode-text-panel" style="display:none;">
           <div class="paste-text-wrap">
-            <textarea id="import-raw-text" class="import-textarea" rows="9" placeholder="Dán nội dung đề thi vào đây... Ví dụ:&#10;&#10;Câu 1: Thủ đô của Việt Nam là gì?&#10;A. Hà Nội&#10;B. TP. Hồ Chí Minh&#10;C. Đà Nẵng&#10;D. Hải Phòng&#10;Đáp án: A&#10;&#10;Câu 2: Đâu là ngôn ngữ lập trình chạy trên trình duyệt web?&#10;*A. JavaScript&#10;B. Pascal&#10;C. Fortran&#10;D. COBOL&#10;&#10;Câu 3: 1 byte bằng bao nhiêu bit?&#10;A. 4   B. 8   C. 16   D. 32&#10;Đáp án: B"></textarea>
+            <textarea id="import-raw-text" class="import-textarea" rows="9" placeholder="Dán nội dung đề thi vào đây... Ví dụ:&#10;&#10;Câu 1: Thủ đô của Việt Nam là gì?&#10;A. Hà Nội&#10;B. TP. Hồ Chí Minh&#10;C. Đà Nẵng&#10;D. Hải Phòng&#10;Đáp án: A&#10;&#10;Câu 2 (Nhiều đáp án): Đâu là các số nguyên tố?&#10;*A. 2&#10;B. 4&#10;*C. 5&#10;D. 9&#10;&#10;Câu 3: Ngôn ngữ nào chạy trên trình duyệt web?&#10;A. JavaScript   B. Pascal   C. HTML/CSS   D. COBOL&#10;Đáp án: A, C"></textarea>
             <div class="paste-actions">
               <button type="button" class="btn-parse-text" onclick="handleImportPastedText()">⚡ Trích xuất câu hỏi</button>
               <button type="button" class="btn-clear-text" onclick="document.getElementById('import-raw-text').value=''">Xóa trắng</button>
@@ -496,6 +503,67 @@
     <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px;">
       <button class="btn-cancel-modal" onclick="closeShareWarningModal()" style="flex: 1; padding: 10px 14px; font-weight: 600;">Đóng</button>
       <button id="btn-warning-edit-now" class="btn-confirm-share" style="flex: 1.4; background: #E65100; padding: 10px 14px; font-weight: 700; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; text-align: center;" onclick="handleWarningEditNow()">Chỉnh sửa ngay</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Tạo câu hỏi tự động bằng AI -->
+<div class="modal-overlay" id="ai-generate-modal" onclick="if(event.target.id==='ai-generate-modal') closeAiGenerateModal()">
+  <div class="modal-card ai-gen-modal-card">
+    <div class="modal-header">
+      <div class="modal-title">Tạo câu hỏi tự động bằng AI</div>
+      <button type="button" class="btn-close-modal" onclick="closeAiGenerateModal()">✕</button>
+    </div>
+
+    <div class="ai-gen-desc">
+      Câu hỏi do AI gợi ý sẽ được nạp vào bảng soạn thảo để bạn chỉnh sửa trước khi lưu hoặc tạo phòng thi.
+    </div>
+
+    <div class="login-form-group">
+      <label class="login-form-label" for="ai-topic-input">Chủ đề / Nội dung trọng tâm *</label>
+      <textarea class="ai-topic-textarea" id="ai-topic-input" rows="3" maxlength="300" placeholder="VD: Hệ mặt trời và các hành tinh, hoặc Câu điều kiện loại 1 và 2 Tiếng Anh 8..."></textarea>
+    </div>
+
+    <div class="ai-gen-grid">
+      <div class="login-form-group">
+        <label class="login-form-label" for="ai-level-input">Khối lớp / Mức độ</label>
+        <input class="login-form-input" id="ai-level-input" type="text" maxlength="80" placeholder="VD: Lớp 7 - Cơ bản" autocomplete="off" />
+      </div>
+      <div class="login-form-group">
+        <label class="login-form-label" for="ai-count-select">Số lượng câu hỏi</label>
+        <select class="form-select" id="ai-count-select">
+          <option value="3">3 câu</option>
+          <option value="5" selected>5 câu</option>
+          <option value="8">8 câu</option>
+          <option value="10">10 câu</option>
+          <option value="15">15 câu</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="ai-gen-grid">
+      <div class="login-form-group">
+        <label class="login-form-label" for="ai-qtype-select">Dạng câu hỏi</label>
+        <select class="form-select" id="ai-qtype-select">
+          <option value="mixed" selected>Trộn 1 đáp án &amp; nhiều đáp án</option>
+          <option value="single">Chỉ 1 đáp án đúng</option>
+          <option value="multiple">Chỉ nhiều đáp án đúng</option>
+        </select>
+      </div>
+      <div class="login-form-group">
+        <label class="login-form-label" for="ai-insert-mode">Cách nạp vào đề</label>
+        <select class="form-select" id="ai-insert-mode">
+          <option value="append" selected>Thêm vào danh sách hiện tại</option>
+          <option value="replace">Thay thế các câu đang soạn</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="ai-gen-error" id="ai-gen-error" style="display:none;"></div>
+
+    <div class="share-modal-actions">
+      <button type="button" class="btn-cancel-modal" id="btn-ai-cancel" onclick="closeAiGenerateModal()">Hủy</button>
+      <button type="button" class="btn-ai-submit" id="btn-ai-submit" onclick="handleGenerateQuestionsAI()">Tạo câu hỏi</button>
     </div>
   </div>
 </div>

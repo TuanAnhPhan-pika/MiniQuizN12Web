@@ -370,11 +370,15 @@
       <span style="color:#64748b;">${authorText}</span>
     `;
 
-    const letters = ['A', 'B', 'C', 'D'];
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
     const listEl = document.getElementById('qv-questions-list');
     listEl.innerHTML = (exam.questions || []).map((q, i) => {
+      const correctList = (Array.isArray(q.correctChoices) && q.correctChoices.length > 0)
+        ? q.correctChoices.map(Number)
+        : [Number(q.correct)];
+      const isMulti = Boolean(q.isMultiple || correctList.length > 1);
       const choicesHtml = (q.choices || []).map((choice, cIdx) => {
-        const isCorrect = q.correct === cIdx;
+        const isCorrect = correctList.includes(cIdx);
         return `<div class="qv-choice-item ${isCorrect ? 'is-correct' : ''}">
           <span class="qv-choice-letter">${letters[cIdx] || (cIdx+1)}.</span>
           <span class="qv-choice-text">${escapeHtml(choice)}</span>
@@ -385,7 +389,7 @@
       return `<div class="qv-q-card">
         <div class="qv-q-header">
           <span class="qv-q-num">Câu ${i + 1}:</span>
-          <span class="qv-q-text">${escapeHtml(q.text)}</span>
+          <span class="qv-q-text">${escapeHtml(q.text)}${isMulti ? ' <span style="display:inline-block;margin-left:6px;padding:2px 7px;font-size:0.72rem;font-weight:800;border-radius:6px;background:#EDE7F6;color:#5E35B1;">Nhiều đáp án</span>' : ''}</span>
         </div>
         <div class="qv-choices-grid">
           ${choicesHtml}

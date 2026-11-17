@@ -166,6 +166,44 @@ main {
 
 .choice-btn:disabled { cursor: default; }
 
+.question-type-hint {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: #EDE7F6;
+  color: #5E35B1;
+  border: 1px solid #D1C4E9;
+}
+
+.btn-submit-multi {
+  margin-top: 18px;
+  width: 100%;
+  background: var(--blue-dark);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 20px;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background .2s, opacity .2s, transform .1s;
+}
+.btn-submit-multi:hover:not(:disabled) { background: var(--blue-mid); }
+.btn-submit-multi:active:not(:disabled) { transform: scale(.98); }
+.btn-submit-multi:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+body.dark .question-type-hint {
+  background: rgba(126, 87, 194, 0.25);
+  border-color: #9575CD;
+  color: #D1C4E9;
+}
+
 /* ── SCORE BADGE (current question score) ── */
 .score-badge {
   text-align: center;
