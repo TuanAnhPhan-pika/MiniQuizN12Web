@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "lint": "node scripts/check-syntax.js",
+    "test:th5": "node tests/run-th5.js",
     "test": "node \"Test Suite/run.cjs\" all",
     "test:suite": "node \"Test Suite/run.cjs\" all",
     "test:backend": "node \"Test Suite/run.cjs\" backend",

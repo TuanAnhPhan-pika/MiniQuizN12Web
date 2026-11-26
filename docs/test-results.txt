@@ -1,0 +1,89 @@
+Thoi gian chay: 2026-11-26 08:42:10 +07:00
+Moi truong: Node.js v24.14.0 | Windows | DB Test: SQLite in-memory (node:sqlite) | E2E: Playwright (Microsoft Edge)
+Lenh chay: npm run test:th5
+
+> mini-quiz-classroom@1.0.0 test:th5
+> node tests/run-th5.js
+
+==============================================================
+  MiniQuizN12Web - Bo kiem thu Thuc hanh 5 (Unit + Int + E2E) 
+  DB Test: SQLite in-memory (node:sqlite) | E2E: Playwright   
+==============================================================
+
+◇ injected env (0) from .env
+◇ injected env (0) from .env
+✔ TC-15 [E2E][Phân vùng tương đương] Đăng nhập hợp lệ trên trình duyệt chuyển sang /dashboard.html và hiển thị tên người dùng (2415.6082ms)
+✔ TC-16 [E2E][Đoán lỗi] Đăng nhập sai mật khẩu giữ nguyên trang đăng nhập và hiển thị thông báo lỗi (2273.8596ms)
+◇ injected env (0) from .env
+◇ injected env (0) from .env
+✔ TC-05 [Integration][Phân vùng tương đương] Đăng ký và đăng nhập thành công, lưu vào DB SQLite in-memory và không lộ hash (508.1563ms)
+◇ injected env (0) from .env
+✔ TC-06 [Integration][Phân vùng tương đương - Luồng lỗi] Từ chối đăng ký trùng tài khoản (409) và đăng nhập sai mật khẩu (401) (248.0528ms)
+✔ TC-22 [Integration][Chuyển trạng thái] Đăng xuất (POST /api/auth/logout) thu hồi phiên và cookie cũ bị từ chối 401 ở /api/auth/me (131.2791ms)
+◇ injected env (0) from .env
+◇ injected env (0) from .env
+✔ TC-10 [Integration][Phân vùng tương đương] Luồng tạo phòng, tham gia (ẩn đáp án/token), bắt đầu, nộp bài và xem bảng xếp hạng (608.8706ms)
+◇ injected env (0) from .env
+✖ TC-11 [Integration][Chuyển trạng thái] Từ chối nộp bài khi phòng vẫn đang ở trạng thái waiting (Host chưa bấm bắt đầu) (180.0425ms)
+✔ TC-23 [Integration][Giá trị biên] Host tạo tối đa 3 phòng hoạt động (MAX_ROOMS_PER_HOST = 3), phòng thứ 4 bị chặn 409 (120.2216ms)
+◇ injected env (0) from .env
+◇ injected env (0) from .env
+✔ TC-12 [Integration][Phân vùng tương đương] Lưu và đọc lại đề thi cá nhân hợp lệ (lưu thật xuống SQLite in-memory) (444.285ms)
+◇ injected env (0) from .env
+✔ TC-13 [Integration][Bảng quyết định] Chặn truy cập khi chưa đăng nhập (401) và chặn user khác xóa đề của chủ sở hữu (291.4451ms)
+◇ injected env (0) from .env
+✖ TC-14 [Integration][Giá trị biên] Từ chối lưu đề thi có tiêu đề chỉ gồm khoảng trắng và 0 câu hỏi (119.3429ms)
+✔ TC-24 [Integration][Chuyển trạng thái] Chủ sở hữu cập nhật câu hỏi (tạo version v2 bất biến) và tự xóa đề (soft delete) (107.4222ms)
+✔ TC-01 [Unit][Giá trị biên] validateUsername từ chối chuỗi 2 và 21 ký tự, chấp nhận 3 ký tự (20.0235ms)
+✔ TC-02 [Unit][Giá trị biên] validatePassword từ chối mật khẩu 5 ký tự, chấp nhận 6 ký tự (4.1275ms)
+✖ TC-03 [Unit][Đoán lỗi] validatePassword phải từ chối mật khẩu chỉ gồm 6 khoảng trắng (4.9997ms)
+✔ TC-04 [Unit][Chuyển trạng thái] Brute-force lock mở ở lần sai thứ 15 và khóa từ lần sai thứ 16 (3.8869ms)
+✔ TC-17 [Unit][Giá trị biên] validateDisplayName từ chối khoảng trắng/31 ký tự, chấp nhận biên 1 và 30 ký tự (4.4695ms)
+✔ TC-18 [Unit][Phân vùng tương đương] hashPassword & verifyPassword khớp đúng mật khẩu, phân biệt hoa thường và sinh salt ngẫu nhiên (356.7346ms)
+✔ TC-07 [Unit][Phân vùng tương đương] getCorrectChoices chuẩn hóa câu nhiều đáp án và lọc chỉ số ngoài biên (21.6072ms)
+✔ TC-08 [Unit][Giá trị biên] addPlayer từ chối thí sinh vượt sức chứa phòng (capacity = 1) (7.761ms)
+✔ TC-09 [Unit][Bảng quyết định] submitAnswer chặn lựa chọn vượt biên, chấm đúng 1 lần và chống nộp trùng (6.2601ms)
+✔ TC-19 [Unit][Bảng quyết định] submitAnswer chấm câu nhiều đáp án All-or-Nothing (thiếu đáp án = 0 điểm, đủ không kể thứ tự = cộng điểm) (5.3029ms)
+✔ TC-20 [Unit][Chuyển trạng thái] Khóa phòng chặn thí sinh mới và chặn giả mạo trùng nickname không có playerToken (5.2276ms)
+✖ TC-21 [Unit][Đoán lỗi] createRoom không được lưu sức chứa âm (capacity = -5) (6.1469ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 20
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5687.1492
+
+✖ failing tests:
+
+test at tests\integration\room.integration.test.js:99:1
+✖ TC-11 [Integration][Chuyển trạng thái] Từ chối nộp bài khi phòng vẫn đang ở trạng thái waiting (Host chưa bấm bắt đầu) (180.0425ms)
+  AssertionError [ERR_ASSERTION]: BUG-03: Thí sinh nộp câu 0 khi phòng còn waiting nhưng server vẫn chấp nhận và tự đổi trạng thái phòng sang started
+  
+  true !== false
+  
+      at TestContext.<anonymous> (tests\integration\room.integration.test.js:128:12)
+
+test at tests\integration\storage.integration.test.js:100:1
+✖ TC-14 [Integration][Giá trị biên] Từ chối lưu đề thi có tiêu đề chỉ gồm khoảng trắng và 0 câu hỏi (119.3429ms)
+  AssertionError [ERR_ASSERTION]: BUG-02: POST /api/storage/private trả HTTP 200 (chấp nhận lưu đề tiêu đề khoảng trắng "   " và 0 câu hỏi)
+  
+  200 !== 400
+  
+      at TestContext.<anonymous> (tests\integration\storage.integration.test.js:115:12)
+
+test at tests\unit\auth.unit.test.js:50:1
+✖ TC-03 [Unit][Đoán lỗi] validatePassword phải từ chối mật khẩu chỉ gồm 6 khoảng trắng (4.9997ms)
+  AssertionError [ERR_ASSERTION]: BUG-01: validatePassword đang chấp nhận mật khẩu toàn khoảng trắng ("      ") thay vì trả thông báo lỗi
+  
+  'object' !== 'string'
+  
+      at TestContext.<anonymous> (tests\unit\auth.unit.test.js:55:10)
+
+test at tests\unit\room.unit.test.js:177:1
+✖ TC-21 [Unit][Đoán lỗi] createRoom không được lưu sức chứa âm (capacity = -5) (6.1469ms)
+  AssertionError [ERR_ASSERTION]: BUG-04: createRoom chấp nhận và lưu capacity âm (-5) thay vì từ chối hoặc chuẩn hóa >= 1
+      at TestContext.<anonymous> (tests\unit\room.unit.test.js:186:10)
+
+Ghi chu: 4 test case Fail (TC-03, TC-11, TC-14, TC-21) phat hien 4 loi that trong ma nguon src/ (xem chi tiet tai docs/BUGS.md). Khong sua test cho xanh de che loi.
