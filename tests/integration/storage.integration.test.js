@@ -102,22 +102,19 @@ test('TC-14 [Integration][Giá trị biên] Từ chối lưu đề thi có tiêu
   try {
     const cookieA = await registerUser(ctx.baseUrl, 'teacher_a');
 
-    const badSave = await apiRequest(ctx.baseUrl, 'POST', '/api/storage/private', {
-      cookie: cookieA,
-      body: {
-        exam: {
-          title: '   ',
-          questions: [],
-        },
-      },
-    });
+    for (const badExam of [{ title: '   ', questions: [] }, { title: 'Đề hợp lệ nhưng rỗng', questions: [] }]) {
+      const badSave = await apiRequest(ctx.baseUrl, 'POST', '/api/storage/private', {
+        cookie: cookieA,
+        body: { exam: badExam },
+      });
 
-    assert.equal(
-      badSave.status,
-      400,
-      `BUG-02: POST /api/storage/private trả HTTP ${badSave.status} (chấp nhận lưu đề tiêu đề khoảng trắng "   " và 0 câu hỏi)`
-    );
-    assert.equal(badSave.json.success, false);
+      assert.equal(
+        badSave.status,
+        400,
+        `BUG-02: POST /api/storage/private trả HTTP ${badSave.status} (phải từ chối đề tiêu đề rỗng hoặc 0 câu hỏi)`
+      );
+      assert.equal(badSave.json.success, false);
+    }
 
     const countRes = await ctx.sqlitePool.query('SELECT COUNT(*) AS cnt FROM quizzes');
     assert.equal(Number(countRes.rows[0].cnt), 0, 'Không được lưu bản ghi không hợp lệ vào bảng quizzes');

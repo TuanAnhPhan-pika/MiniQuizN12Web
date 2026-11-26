@@ -447,9 +447,18 @@ async function incrementQuizCopiesIssued(quizId) {
   return res.rows[0]?.copies_issued || 0;
 }
 
+function parseStrictChoiceIndex(val) {
+  if (val === null || val === undefined || typeof val === 'boolean' || typeof val === 'object') return NaN;
+  if (typeof val === 'string' && !val.trim()) return NaN;
+  const n = Number(val);
+  return Number.isInteger(n) ? n : NaN;
+}
+
 async function saveQuiz(exam, ownerUsername, isPublic = false) {
-  const quizId = exam.id || `exam-${Date.now()}`;
-  const code = exam.code || `#${Math.random().toString(16).slice(2, 6)}`;
+  const rawQuizId = (typeof exam.id === 'string' || typeof exam.id === 'number') ? String(exam.id).trim() : '';
+  const quizId = /^[a-zA-Z0-9_.:-]{1,100}$/.test(rawQuizId) ? rawQuizId : `exam-${Date.now()}`;
+  const rawCode = typeof exam.code === 'string' ? exam.code.trim() : '';
+  const code = rawCode || `#${Math.random().toString(16).slice(2, 6)}`;
   const now = Date.now();
   const owner = String(ownerUsername || exam.ownerUsername || 'system').toLowerCase();
 
@@ -470,7 +479,9 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
       const isOwner = (ownerUserId && ex.owner_user_id === ownerUserId) ||
                       (ex.owner_id && ex.owner_id.toLowerCase() === owner);
       if (!isOwner) {
-        throw new Error('Bạn không có quyền chỉnh sửa đề thi của người dùng khác!');
+        const ownErr = new Error('Bạn không có quyền chỉnh sửa đề thi của người dùng khác!');
+        ownErr.status = 403;
+        throw ownErr;
       }
     }
 
@@ -505,13 +516,14 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
     await client.query(`DELETE FROM quiz_questions WHERE quiz_id = $1`, [quizId]);
 
     // 5. Question Versioning BẤT BIẾN (Immutable question versions)
-    const qs = Array.isArray(exam.questions) ? exam.questions : [];
+    const rawQs = Array.isArray(exam.questions) ? exam.questions : [];
+    const qs = rawQs.filter(item => item && typeof item === 'object' && !Array.isArray(item));
     for (let idx = 0; idx < qs.length; idx++) {
       const q = qs[idx];
-      let questionId = q.id;
-      if (!questionId || questionId.startsWith('temp-')) {
-        questionId = `q-${quizId}-${idx + 1}-${Date.now().toString(36)}`;
-      }
+      const rawQId = (typeof q.id === 'string' || typeof q.id === 'number') ? String(q.id).trim() : '';
+      let questionId = /^[a-zA-Z0-9_.:-]{1,100}$/.test(rawQId) && !rawQId.startsWith('temp-')
+        ? rawQId
+        : `q-${quizId}-${idx + 1}-${Date.now().toString(36)}`;
 
       await client.query(
         `INSERT INTO questions (id, owner_id, owner_user_id, owner_username_snapshot)
@@ -534,7 +546,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
       const currentChoices = Array.isArray(q.choices) ? q.choices : [];
       const correctSet = new Set(
         (Array.isArray(q.correctChoices) && q.correctChoices.length > 0)
-          ? q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < currentChoices.length)
+          ? q.correctChoices.map(parseStrictChoiceIndex).filter(n => Number.isInteger(n) && n >= 0 && n < currentChoices.length)
           : (typeof q.correct === 'number' && Number.isInteger(q.correct) && q.correct >= 0 && q.correct < currentChoices.length ? [q.correct] : [])
       );
 
@@ -563,7 +575,12 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
         const lastOpts = lastOptsRes.rows;
 
         // So sánh xem nội dung hoặc các đáp án có thay đổi không
-        let hasChanged = (lastV.content !== (q.text || '') || (lastV.explanation || '') !== (q.explanation || ''));
+        let hasChanged = (
+          lastV.content !== (q.text || '') ||
+          (lastV.explanation || '') !== (q.explanation || '') ||
+          (lastV.difficulty || 'medium') !== (q.difficulty || 'medium') ||
+          (lastV.image_url || '') !== (q.image || '')
+        );
         if (!hasChanged && lastOpts.length !== currentChoices.length) hasChanged = true;
         if (!hasChanged) {
           for (let cIdx = 0; cIdx < currentChoices.length; cIdx++) {
@@ -601,7 +618,7 @@ async function saveQuiz(exam, ownerUsername, isPublic = false) {
       await client.query(
         `INSERT INTO quiz_questions (id, quiz_id, question_version_id, order_index, points, time_limit)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [`qq-${quizId}-${idx + 1}`, quizId, targetVersionId, idx, exam.pointsPerQ || 100, exam.timePerQ || 15]
+        [`qq-${quizId}-${idx + 1}`, quizId, targetVersionId, idx, q.points || exam.pointsPerQ || 100, q.timeLimit || exam.timePerQ || 15]
       );
     }
 
@@ -755,7 +772,7 @@ async function getUserAttempts(username) {
       qObj.choices.push(row.opt_content);
       if (row.opt_is_correct) {
         const optIdx = qObj.choices.length - 1;
-        qObj.correctChoice = optIdx;
+        if (qObj.correctChoice === -1) qObj.correctChoice = optIdx;
         qObj.correctChoices.push(optIdx);
         if (qObj.correctChoices.length > 1) qObj.questionType = 'multiple';
       }
@@ -820,7 +837,7 @@ async function saveAttempt(record) {
 
     await client.query(
       `INSERT INTO attempts (id, user_id, account_user_id, username_snapshot, quiz_id, game_session_id, pin, room_title, exam_title, score, max_score, correct_count, total_questions, ratio_pct, formatted_time, created_at, finished_at, rank, total_players, details)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       VALUES ($1, $2, (SELECT id FROM users WHERE id = $3::bigint LIMIT 1), $4, (SELECT id FROM quizzes WHERE id = $5::varchar LIMIT 1), (SELECT id FROM game_sessions WHERE id = $6::varchar LIMIT 1), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (id) DO UPDATE SET 
          score = EXCLUDED.score, 
          max_score = EXCLUDED.max_score,
@@ -844,17 +861,31 @@ async function saveAttempt(record) {
       ]
     );
 
-    const answers = details;
+    const answers = Array.isArray(details) ? details : [];
     for (let i = 0; i < answers.length; i++) {
       const ans = answers[i];
+      if (!ans || typeof ans !== 'object') continue;
       const qIdx = ans.questionIndex !== undefined ? ans.questionIndex : i;
+      let versionId = ans.questionVersionId || null;
       let optionId = ans.selectedOptionId || null;
 
-      // Validate option thuộc đúng question_version nếu có
-      if (optionId && ans.questionVersionId) {
+      // Validate version & option thuộc đúng question_version nếu có; tránh vi phạm khóa ngoại
+      if (versionId) {
+        const verCheck = await client.query(
+          `SELECT id FROM question_versions WHERE id = $1 LIMIT 1`,
+          [versionId]
+        );
+        if (verCheck.rows.length === 0) {
+          versionId = null;
+          optionId = null;
+        }
+      }
+      if (optionId && !versionId) {
+        optionId = null;
+      } else if (optionId && versionId) {
         const optCheck = await client.query(
           `SELECT id FROM question_options WHERE id = $1 AND question_version_id = $2 LIMIT 1`,
-          [optionId, ans.questionVersionId]
+          [optionId, versionId]
         );
         if (optCheck.rows.length === 0) {
           optionId = null;
@@ -863,14 +894,14 @@ async function saveAttempt(record) {
 
       const primaryUserChoice = typeof ans.userChoice === 'number'
         ? ans.userChoice
-        : (Array.isArray(ans.userChoices) && ans.userChoices.length > 0 ? Number(ans.userChoices[0]) : -1);
+        : (Array.isArray(ans.userChoices) && ans.userChoices.length > 0 ? parseStrictChoiceIndex(ans.userChoices[0]) : -1);
 
       await client.query(
         `INSERT INTO attempt_answers (attempt_id, question_index, question_version_id, selected_option_id, user_choice, is_correct, response_time_ms, score_awarded, streak_before, streak_after, answered_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (attempt_id, question_index) DO NOTHING`,
         [
-          attemptId, qIdx, ans.questionVersionId || null, optionId,
+          attemptId, qIdx, versionId, optionId,
           Number.isInteger(primaryUserChoice) ? primaryUserChoice : -1,
           !!ans.isCorrect, ans.responseTimeMs || 0, ans.earned || ans.scoreAwarded || 0,
           ans.streakBefore || 0, ans.streakAfter || ans.streak || 0, now
@@ -917,11 +948,12 @@ async function saveHostedGameSession(hostUsername, sessionRecord) {
     await client.query(
       `INSERT INTO game_sessions (id, host_id, room_code, room_title, status, capacity, total_players, started_at, ended_at, formatted_time, stats, created_at)
        VALUES ($1, $2, $3, $4, 'finished', $5, $6, $7, $8, $9, $10, $11)
-       ON CONFLICT (id) DO UPDATE SET status = 'finished', total_players = EXCLUDED.total_players, ended_at = EXCLUDED.ended_at, formatted_time = EXCLUDED.formatted_time, stats = EXCLUDED.stats`,
+       ON CONFLICT (id) DO UPDATE SET room_title = EXCLUDED.room_title, status = 'finished', total_players = EXCLUDED.total_players, ended_at = EXCLUDED.ended_at, formatted_time = EXCLUDED.formatted_time, stats = EXCLUDED.stats`,
       [sessionId, host, sessionRecord.pin || '', sessionRecord.roomTitle || 'Phòng thi trực tuyến', sessionRecord.capacity || 40, candidates.length, sessionRecord.createdAt || (now - 60000), now, sessionRecord.formattedTime || new Date(now).toLocaleString('vi-VN'), JSON.stringify(stats), sessionRecord.createdAt || now]
     );
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
+      const safeAv = typeof c.av === 'string' && /^[a-zA-Z0-9_-]{1,16}$/.test(c.av.trim()) ? c.av.trim() : '01';
       await client.query(
         `INSERT INTO game_players (id, game_session_id, nickname, avatar, final_score, rank,
           correct_count, wrong_count, joined_at, finished_at)
@@ -929,7 +961,7 @@ async function saveHostedGameSession(hostUsername, sessionRecord) {
          ON CONFLICT (id) DO UPDATE SET final_score = EXCLUDED.final_score,
            rank = EXCLUDED.rank, correct_count = EXCLUDED.correct_count,
            wrong_count = EXCLUDED.wrong_count, finished_at = EXCLUDED.finished_at`,
-        [`gp-${crypto.createHash('sha256').update(sessionId + ':' + (c.id || i)).digest('hex')}`, sessionId, c.nick || 'Player', c.av || '01',
+        [`gp-${crypto.createHash('sha256').update(sessionId + ':' + (c.id || i)).digest('hex')}`, sessionId, c.nick || 'Player', safeAv,
           c.score || 0, i + 1, c.correctCount || 0,
           (c.totalQuestions || 0) - (c.correctCount || 0), sessionRecord.createdAt || now, now]
       );
@@ -1060,7 +1092,10 @@ async function getHostedGameSessionById(sessionId) {
 async function createAiDocument({ ownerUsername, ownerUserId = null, title, filePath = '', contentText = '' }) {
   const owner = String(ownerUsername || 'system').toLowerCase();
   let resolvedUserId = ownerUserId || null;
-  if (!resolvedUserId && owner) {
+  if (resolvedUserId) {
+    const idCheck = await pg.query(`SELECT id FROM users WHERE id = $1 LIMIT 1`, [resolvedUserId]);
+    resolvedUserId = idCheck.rows[0]?.id || null;
+  } else if (owner) {
     const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [owner]);
     resolvedUserId = uRes.rows[0]?.id || null;
   }
@@ -1076,7 +1111,10 @@ async function createAiDocument({ ownerUsername, ownerUserId = null, title, file
 async function createAiGenerationJob({ username, accountUserId = null, status = 'pending', prompt = '', resultData = null }) {
   const owner = String(username || 'system').toLowerCase();
   let resolvedUserId = accountUserId || null;
-  if (!resolvedUserId && owner) {
+  if (resolvedUserId) {
+    const idCheck = await pg.query(`SELECT id FROM users WHERE id = $1 LIMIT 1`, [resolvedUserId]);
+    resolvedUserId = idCheck.rows[0]?.id || null;
+  } else if (owner) {
     const uRes = await pg.query(`SELECT id FROM users WHERE username_lower = $1 LIMIT 1`, [owner]);
     resolvedUserId = uRes.rows[0]?.id || null;
   }

@@ -247,6 +247,11 @@ test('Storage private GET/POST/DELETE enforce auth, natural code sort and valida
   assert.equal((await fetch(base + '/api/storage/private', {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer alice' },
     body: JSON.stringify({ title: 'New Exam', questions: [] }),
+  })).status, 400);
+
+  assert.equal((await fetch(base + '/api/storage/private', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer alice' },
+    body: JSON.stringify({ title: 'New Exam', questions: [{ text: 'Q1', choices: ['A', 'B'], correct: 0 }] }),
   })).status, 200);
   assert.equal(savedPrivate.length, 1);
 

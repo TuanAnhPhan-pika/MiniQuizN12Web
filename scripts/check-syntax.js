@@ -12,5 +12,5 @@ function check(target) {
     if (result.status !== 0) process.exit(result.status || 1);
   }
 }
-for (const target of ['server.js', 'src', 'public/js', 'scripts', 'Test Suite']) check(target);
+for (const target of ['server.js', 'src', 'public/js', 'scripts', 'Test Suite', 'tests']) check(target);
 console.log('All JavaScript syntax checks passed.');

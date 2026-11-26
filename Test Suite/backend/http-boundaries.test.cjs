@@ -14,7 +14,7 @@ test('HTTP: database failures return controlled errors on storage and history ro
   }
   for (const [path, body, method] of [
     ['/api/storage/private'], ['/api/storage/public'], ['/api/history'], ['/api/history/hosted'],
-    ['/api/storage/private', { title: 'Quiz' }], ['/api/storage/private/exam1', undefined, 'DELETE'],
+    ['/api/storage/private', { title: 'Quiz', questions: [{ text: 'Q1', choices: ['A', 'B'], correct: 0 }] }], ['/api/storage/private/exam1', undefined, 'DELETE'],
   ]) {
     const res = await request(h, path, body, 'alice', method);
     assert.equal(res.status, 500, path); assert.equal(res.body.success, false);

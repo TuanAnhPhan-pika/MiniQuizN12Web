@@ -45,21 +45,27 @@ function loadIsolatedModule(relPath, overrides = {}, extraTail = '', extraEnv = 
  * Khởi chạy một instance server HTTP cục bộ cô lập hoàn toàn,
  * gắn với cơ sở dữ liệu SQLite in-memory mới tinh (không đụng DB dev).
  */
-async function startIsolatedServer() {
+async function startIsolatedServer(options = {}) {
+  const { aiClientFactory = null, extraEnv = {} } = options;
   const sqlitePool = createSqliteTestDb();
 
   const dbIndex = loadIsolatedModule('src/db/index.js', {
     './pool.js': sqlitePool,
-  });
+  }, '', extraEnv);
 
   const auth = loadIsolatedModule('src/auth.js', {
     './db/index.js': dbIndex,
     './db/pool.js': sqlitePool,
-  });
+  }, '', extraEnv);
 
   const roomsManager = loadIsolatedModule('src/rooms/manager.js', {
     '../db/index.js': dbIndex,
-  });
+  }, '', extraEnv);
+
+  const aiService = loadIsolatedModule('src/ai/gemini.js', {}, '', extraEnv);
+  if (typeof aiClientFactory === 'function') {
+    aiService.setGenAIClientFactoryForTest(aiClientFactory);
+  }
 
   const serverSourcePath = path.join(PROJECT_ROOT, 'src/server.js');
   const rawServerSource = fs.readFileSync(serverSourcePath, 'utf8')
@@ -72,6 +78,7 @@ async function startIsolatedServer() {
     './db/pool.js': sqlitePool,
     './db/migrate.js': { runMigration: async () => {} },
     './rooms/manager.js': roomsManager,
+    './ai/gemini.js': aiService,
   };
 
   const ctx = {
@@ -96,6 +103,7 @@ async function startIsolatedServer() {
         NODE_ENV: 'test',
         DATA_BACKEND: 'pg',
         ALLOW_OFFLINE_MODE: 'true',
+        ...extraEnv,
       },
       exit(code) { throw new Error(`process.exit(${code})`); },
     },
@@ -112,7 +120,7 @@ async function startIsolatedServer() {
     { filename: serverSourcePath }
   );
 
-  const { server } = ctx.module.exports;
+  const { server, handleHttpRequest } = ctx.module.exports;
 
   await auth.initAuth();
 
@@ -128,10 +136,12 @@ async function startIsolatedServer() {
     baseUrl,
     port,
     server,
+    handleHttpRequest,
     sqlitePool,
     db: dbIndex,
     auth,
     roomsManager,
+    aiService,
     async close() {
       if (typeof server.closeAllConnections === 'function') {
         server.closeAllConnections();
@@ -143,17 +153,24 @@ async function startIsolatedServer() {
 }
 
 /**
- * Tiện ích gọi HTTP API trả về { status, headers, setCookies, cookieHeader, json }.
+ * Tiện ích gọi HTTP API trả về { status, headers, setCookies, cookieHeader, json, text }.
  */
-async function apiRequest(baseUrl, method, pathname, { body, cookie } = {}) {
-  const headers = {};
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+async function apiRequest(baseUrl, method, pathname, { body, rawBody, cookie, headers: extraHeaders, redirect = 'follow' } = {}) {
+  const headers = { ...(extraHeaders || {}) };
+  if (body !== undefined && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   if (cookie) headers['Cookie'] = cookie;
+
+  const payload = rawBody !== undefined
+    ? rawBody
+    : (body !== undefined ? JSON.stringify(body) : undefined);
 
   const res = await fetch(`${baseUrl}${pathname}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: payload,
+    redirect,
   });
 
   const text = await res.text();

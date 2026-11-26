@@ -1844,7 +1844,11 @@
         credentials: 'same-origin',
         body: JSON.stringify({ exam })
       });
-      return await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok || (data && data.success === false)) {
+        showToast('⚠️ ' + (data?.message || 'Không thể lưu đề thi lên máy chủ!'));
+      }
+      return data;
     } catch (err) {
       console.warn('Lỗi lưu server:', err);
       return null;

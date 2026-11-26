@@ -47,16 +47,18 @@ test('TC-02 [Unit][Giá trị biên] validatePassword từ chối mật khẩu 5
   assert.equal(ok6, null, 'Mật khẩu đủ 6 ký tự phải hợp lệ');
 });
 
-test('TC-03 [Unit][Đoán lỗi] validatePassword phải từ chối mật khẩu chỉ gồm 6 khoảng trắng', () => {
+test('TC-03 [Unit][Đoán lỗi] validatePassword từ chối mật khẩu toàn khoảng trắng, thiếu ký tự thật sau trim và >128 ký tự', () => {
   const auth = createPureAuth();
 
-  const result = auth.validatePassword('      ');
-
-  assert.equal(
-    typeof result,
-    'string',
-    'BUG-01: validatePassword đang chấp nhận mật khẩu toàn khoảng trắng ("      ") thay vì trả thông báo lỗi'
-  );
+  for (const badPass of ['      ', '     a', 'a'.repeat(129)]) {
+    const result = auth.validatePassword(badPass);
+    assert.equal(
+      typeof result,
+      'string',
+      `BUG-01: validatePassword phải từ chối "${badPass.slice(0, 12)}"`
+    );
+  }
+  assert.equal(auth.validatePassword('a'.repeat(128)), null, 'Mật khẩu đúng biên trên 128 ký tự phải hợp lệ');
 });
 
 test('TC-04 [Unit][Chuyển trạng thái] Brute-force lock mở ở lần sai thứ 15 và khóa từ lần sai thứ 16', () => {

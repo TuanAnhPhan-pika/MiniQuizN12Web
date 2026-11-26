@@ -775,6 +775,10 @@
       alert('Vui lòng tạo hoặc chọn đề thi trước khi mở phòng!');
       return;
     }
+    if (!Array.isArray(chosenExam.questions) || chosenExam.questions.length === 0) {
+      showWarningModal('Đề thi chưa có câu hỏi nào. Vui lòng thêm ít nhất 1 câu hỏi trước khi tạo phòng!', 'Thiếu câu hỏi');
+      return;
+    }
 
     const roomName = nameInput.value.trim();
     if (!roomName) {
@@ -782,10 +786,17 @@
       nameInput.focus();
       return;
     }
-    const capacity = parseInt(capacityInput.value) || 40;
-
-    // Xóa đề thi đã gán tạm khỏi sessionStorage sau khi tạo phòng thành công
-    sessionStorage.removeItem('mqc_assigned_exam');
+    const rawCap = String(capacityInput?.value ?? '').trim();
+    let capacity = 40;
+    if (rawCap !== '') {
+      const parsedCap = Number(rawCap);
+      if (!/^\d+$/.test(rawCap) || !Number.isInteger(parsedCap) || parsedCap < 1 || parsedCap > 500) {
+        showWarningModal('Số lượng thành viên phải là số nguyên từ 1 đến 500!', 'Dữ liệu không hợp lệ');
+        capacityInput?.focus();
+        return;
+      }
+      capacity = parsedCap;
+    }
 
     const now = Date.now();
 
@@ -813,6 +824,7 @@
         showWarningModal(data.message || 'Lỗi khi tạo phòng thi trên máy chủ!', 'Lỗi tạo phòng');
         return;
       }
+      sessionStorage.removeItem('mqc_assigned_exam');
       serverPin = data.pin;
       roomData = {
         ...roomPayload,

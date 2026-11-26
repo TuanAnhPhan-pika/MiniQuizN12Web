@@ -213,11 +213,31 @@
   }
 
   /* ── Login/Register modal ── */
+  function sanitizeRedirectTarget(raw) {
+    if (typeof raw !== 'string') return 'dashboard.html';
+    const trimmed = raw.trim();
+    if (!trimmed || /^(\/\/|\/\\|\\)/.test(trimmed) || /[\u0000-\u001F\u007F]/.test(trimmed)) {
+      return 'dashboard.html';
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+      return 'dashboard.html';
+    }
+    try {
+      const resolved = new URL(trimmed, window.location.origin);
+      if (resolved.origin !== window.location.origin) return 'dashboard.html';
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return 'dashboard.html';
+      return resolved.pathname + resolved.search + resolved.hash;
+    } catch (e) {
+      return 'dashboard.html';
+    }
+  }
+
   function openLoginModal(tab = 'login') {
     const modal = document.getElementById('login-modal');
     if (modal) modal.classList.add('show');
     switchAuthTab(tab);
     setTimeout(() => {
+      if (modal && modal.contains(document.activeElement)) return;
       if (tab === 'login') {
         document.getElementById('login-user')?.focus();
       } else {
@@ -302,7 +322,7 @@
           window.MQC_Auth.setToken(data.token);
         }
         const urlParams = new URLSearchParams(window.location.search);
-        const redirectUrl = urlParams.get('redirect') || 'dashboard.html';
+        const redirectUrl = sanitizeRedirectTarget(urlParams.get('redirect'));
         window.location.href = redirectUrl;
       } else {
         showAuthMessage('error-login', data.message || 'Tài khoản hoặc mật khẩu không đúng.', res.status === 429);
@@ -350,6 +370,9 @@
         </div>
       `;
     } else {
+      if (wrap.querySelector('.btn-login') && !wrap.querySelector('[onclick*="logoutOnHome"]')) {
+        return;
+      }
       wrap.innerHTML = `
         <button class="btn-login" onclick="openLoginModal('login')">🔑 Đăng nhập / Đăng ký</button>
         <div class="tooltip">Đăng nhập để sử dụng thêm nhiều tính năng hơn</div>
@@ -428,8 +451,8 @@
       return;
     }
 
-    if (!password || password.length < 6) {
-      showAuthMessage('error-register', 'Mật khẩu phải có ít nhất 6 ký tự.');
+    if (!password || password.trim().length < 6 || password.length > 128) {
+      showAuthMessage('error-register', 'Mật khẩu phải dài 6-128 ký tự và không được chỉ gồm khoảng trắng.');
       passInput?.focus();
       return;
     }
@@ -458,7 +481,8 @@
         if (data.token && window.MQC_Auth) {
           window.MQC_Auth.setToken(data.token);
         }
-        window.location.href = 'dashboard.html';
+        const urlParams = new URLSearchParams(window.location.search);
+        window.location.href = sanitizeRedirectTarget(urlParams.get('redirect'));
       } else {
         showAuthMessage('error-register', data.message || 'Đăng ký thất bại.', res.status === 429);
       }
@@ -473,6 +497,7 @@
   }
 
   // Export functions to window
+  window.sanitizeRedirectTarget = sanitizeRedirectTarget;
   window.openLoginModal = openLoginModal;
   window.closeLoginModal = closeLoginModal;
   window.handleModalOverlayClick = handleModalOverlayClick;

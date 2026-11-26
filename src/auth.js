@@ -147,6 +147,9 @@ function hashPasswordAsync(password) {
 }
 
 function verifyPassword(password, salt, expectedHashHex) {
+  if (typeof password !== 'string' || typeof salt !== 'string' || typeof expectedHashHex !== 'string') {
+    return false;
+  }
   const hash = crypto.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHashHex, 'hex');
   if (hash.length !== expected.length) return false;
@@ -154,6 +157,9 @@ function verifyPassword(password, salt, expectedHashHex) {
 }
 
 function verifyPasswordAsync(password, salt, expectedHashHex) {
+  if (typeof password !== 'string' || typeof salt !== 'string' || typeof expectedHashHex !== 'string') {
+    return Promise.resolve(false);
+  }
   return new Promise((resolve, reject) => {
     crypto.scrypt(password, salt, 64, (err, hash) => {
       if (err) { reject(err); return; }
@@ -192,14 +198,17 @@ function findUserByUsernameSync(username) {
 }
 
 function validateUsername(username) {
-  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username || '')) {
+  if (typeof username !== 'string' || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     return 'Tài khoản phải dài 3-20 ký tự, chỉ gồm chữ, số và gạch dưới.';
   }
   return null;
 }
 
 function validateDisplayName(name) {
-  const trimmed = String(name || '').trim();
+  if (typeof name !== 'string') {
+    return 'Tên hiển thị không được để trống và tối đa 30 ký tự.';
+  }
+  const trimmed = name.trim();
   if (!trimmed || trimmed.length > 30) {
     return 'Tên hiển thị không được để trống và tối đa 30 ký tự.';
   }
@@ -207,8 +216,8 @@ function validateDisplayName(name) {
 }
 
 function validatePassword(password) {
-  if (!password || password.length < 6) {
-    return 'Mật khẩu phải có ít nhất 6 ký tự.';
+  if (typeof password !== 'string' || password.trim().length < 6 || password.length > 128) {
+    return 'Mật khẩu phải dài 6-128 ký tự và không được chỉ gồm khoảng trắng.';
   }
   return null;
 }
@@ -244,14 +253,22 @@ function cooldownInfo(lastChangeAt, cooldownMs) {
 }
 
 // ── Sessions (PostgreSQL + Memory cache) ──
+function enforceMemorySessionCap(now) {
+  if (memorySessions.size < MAX_MEMORY_SESSIONS) return;
+  for (const [tok, s] of memorySessions.entries()) {
+    if (now > s.expiresAt) memorySessions.delete(tok);
+  }
+  while (memorySessions.size >= MAX_MEMORY_SESSIONS) {
+    const oldestToken = memorySessions.keys().next().value;
+    if (oldestToken === undefined) break;
+    memorySessions.delete(oldestToken);
+  }
+}
+
 function createSession(username) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  if (memorySessions.size >= MAX_MEMORY_SESSIONS) {
-    for (const [tok, s] of memorySessions.entries()) {
-      if (now > s.expiresAt) memorySessions.delete(tok);
-    }
-  }
+  enforceMemorySessionCap(now);
   const expiresAt = now + SESSION_TTL_MS;
   const sess = { username, createdAt: now, expiresAt };
   
@@ -273,6 +290,7 @@ async function createSessionPersisted(username) {
   const now = Date.now();
   const expiresAt = now + SESSION_TTL_MS;
   await db.saveSession(token, username, expiresAt, now);
+  enforceMemorySessionCap(now);
   memorySessions.set(token, { username, createdAt: now, expiresAt });
   return token;
 }
@@ -297,9 +315,9 @@ function deleteSession(token) {
 }
 
 function deleteOtherSessions(username, exceptToken) {
-  const lower = username.toLowerCase();
+  const lower = String(username || '').toLowerCase();
   for (const [token, sess] of memorySessions.entries()) {
-    if (token !== exceptToken && sess.username.toLowerCase() === lower) {
+    if (token !== exceptToken && String(sess.username || '').toLowerCase() === lower) {
       memorySessions.delete(token);
     }
   }
@@ -432,6 +450,7 @@ function upsertUser(user) {
     lastNameChangeAt: user.lastNameChangeAt || 0,
     lastPasswordChangeAt: user.lastPasswordChangeAt || 0,
     avatar: user.avatar || '01',
+    bio: user.bio || '',
     role: user.role || 'teacher',
   };
   memoryUsers.set(lower, normalized);

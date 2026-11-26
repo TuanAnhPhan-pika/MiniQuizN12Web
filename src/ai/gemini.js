@@ -109,6 +109,13 @@ function stripChoicePrefix(text) {
     .trim();
 }
 
+function toValidIndex(val) {
+  if (val === null || val === undefined || typeof val === 'boolean' || typeof val === 'object') return NaN;
+  if (typeof val === 'string' && !val.trim()) return NaN;
+  const n = Number(val);
+  return Number.isInteger(n) ? n : NaN;
+}
+
 function normalizeGeneratedQuestions(rawQuestions, requestedType = 'mixed') {
   if (!Array.isArray(rawQuestions)) return [];
   const out = [];
@@ -127,12 +134,12 @@ function normalizeGeneratedQuestions(rawQuestions, requestedType = 'mixed') {
     if (cleanedChoices.length < 4) continue;
 
     let correctIndices = Array.isArray(item.correctIndices)
-      ? item.correctIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < 4)
+      ? item.correctIndices.map(toValidIndex).filter(n => Number.isInteger(n) && n >= 0 && n < 4)
       : [];
 
-    if (correctIndices.length === 0 && Number.isInteger(Number(item.correct))) {
-      const c = Number(item.correct);
-      if (c >= 0 && c < 4) correctIndices = [c];
+    const singleCorr = toValidIndex(item.correct);
+    if (correctIndices.length === 0 && Number.isInteger(singleCorr)) {
+      if (singleCorr >= 0 && singleCorr < 4) correctIndices = [singleCorr];
     }
 
     correctIndices = Array.from(new Set(correctIndices)).sort((a, b) => a - b);
@@ -333,6 +340,7 @@ function buildWeaknessStatsInput({ roomTitle, stats }) {
   const rawQuestions = Array.isArray(safeStats.questionsStats) ? safeStats.questionsStats : [];
 
   const compactQuestions = rawQuestions
+    .filter(q => q && typeof q === 'object')
     .map((q, idx) => ({
       qIdx: Number(q.qIdx) || (idx + 1),
       text: String(q.text || `Câu ${idx + 1}`).trim().slice(0, 160),

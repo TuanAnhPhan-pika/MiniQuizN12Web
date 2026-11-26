@@ -157,6 +157,24 @@ test('TC-23 [Integration][Giá trị biên] Host tạo tối đa 3 phòng hoạt
     });
     assert.equal(fourth.status, 409, 'Tạo phòng thứ 4 vượt MAX_ROOMS_PER_HOST phải trả HTTP 409');
     assert.equal(fourth.json.success, false);
+
+    // Kiểm tra POST /api/rooms từ chối capacity ngoài [1, 500] bằng HTTP 400
+    const hostCapCookie = await registerAndGetCookie(ctx.baseUrl, 'host_cap_api');
+    for (const badCap of [-5, 0, 12.5, 501, 'abc', true]) {
+      const badRes = await apiRequest(ctx.baseUrl, 'POST', '/api/rooms', {
+        cookie: hostCapCookie,
+        body: { title: 'Phòng sai capacity', capacity: badCap, questions: ROOM_QUESTIONS },
+      });
+      assert.equal(badRes.status, 400, `POST /api/rooms với capacity=${String(badCap)} phải trả HTTP 400`);
+      assert.equal(badRes.json.success, false);
+    }
+
+    const defaultCapRes = await apiRequest(ctx.baseUrl, 'POST', '/api/rooms', {
+      cookie: hostCapCookie,
+      body: { title: 'Phòng mặc định capacity', questions: ROOM_QUESTIONS },
+    });
+    assert.equal(defaultCapRes.status, 200);
+    assert.equal(defaultCapRes.json.room.capacity, 40, 'Không truyền capacity phải dùng mặc định 40');
   } finally {
     await ctx.close();
   }

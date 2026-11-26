@@ -244,12 +244,18 @@ async function migrateQuizzesAndQuestions() {
           );
 
           const choices = Array.isArray(quest.choices) ? quest.choices : [];
+          const toIdx = v => (v === null || v === undefined || typeof v === 'boolean' || typeof v === 'object' || (typeof v === 'string' && !v.trim())) ? NaN : Number(v);
+          const correctSet = new Set(
+            Array.isArray(quest.correctChoices) && quest.correctChoices.length > 0
+              ? quest.correctChoices.map(toIdx).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length)
+              : (typeof quest.correct === 'number' && Number.isInteger(quest.correct) && quest.correct >= 0 && quest.correct < choices.length ? [quest.correct] : [])
+          );
           for (let cIdx = 0; cIdx < choices.length; cIdx++) {
             await client.query(
               `INSERT INTO question_options (id, question_version_id, content, is_correct, order_index)
                VALUES ($1, $2, $3, $4, $5)
                ON CONFLICT (id) DO NOTHING`,
-              [`${versionId}-opt-${cIdx}`, versionId, String(choices[cIdx]), (quest.correct === cIdx), cIdx]
+              [`${versionId}-opt-${cIdx}`, versionId, String(choices[cIdx]), correctSet.has(cIdx), cIdx]
             );
           }
 

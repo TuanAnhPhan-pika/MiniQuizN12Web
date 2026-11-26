@@ -8,7 +8,10 @@
 
   function parseAnswerIndices(rawStr, maxChoices) {
     const limit = typeof maxChoices === 'number' && maxChoices > 0 ? maxChoices : 8;
-    const str = String(rawStr || '').trim();
+    const str = String(rawStr || '')
+      .trim()
+      .replace(/^(?:(?:chọn\s+)?(?:đáp\s*án|phương\s*án|lựa\s*chọn)(?:\s*đúng)?|answer|choice|option|key|đ\/a|da|đúng|câu|ý)(?:\s*[:.\-–)]+\s*|\s+(?=[A-Ha-h0-9]\b))/i, '')
+      .trim();
     if (!str) return [];
     const letterMatches = str.toUpperCase().match(/[A-H]/g);
     if (letterMatches && letterMatches.length > 0) {
@@ -256,13 +259,14 @@
           }
 
           // Chuẩn hóa câu hỏi
-          const cleanQuestions = questions.map((q, idx) => {
-            const choices = Array.isArray(q.choices) ? q.choices : (q.options || []);
+          const toJsonIdx = v => (v === null || v === undefined || typeof v === 'boolean' || typeof v === 'object' || (typeof v === 'string' && !v.trim())) ? NaN : Number(v);
+          const cleanQuestions = questions.filter(q => q && typeof q === 'object' && !Array.isArray(q)).map((q, idx) => {
+            const choices = Array.isArray(q.choices) ? q.choices : (Array.isArray(q.options) ? q.options : []);
             let corrList = [];
             if (Array.isArray(q.correctChoices) && q.correctChoices.length > 0) {
-              corrList = q.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
+              corrList = q.correctChoices.map(toJsonIdx).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
             } else if (Array.isArray(q.correct) && q.correct.length > 0) {
-              corrList = q.correct.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
+              corrList = q.correct.map(toJsonIdx).filter(n => Number.isInteger(n) && n >= 0 && n < choices.length);
             } else if (typeof q.correct === 'number' && Number.isInteger(q.correct)) {
               if (q.correct >= 0 && q.correct < choices.length) corrList = [q.correct];
             } else if (typeof q.correct === 'string') {
@@ -396,29 +400,61 @@
      * Phân tích tệp CSV
      */
     parseCsv: function(csvText, defaultTitle) {
-      const lines = csvText.split(/\r?\n/).filter(l => l.trim());
-      const rows = lines.map(line => {
-        // Tách dấu phẩy hoặc tab hoặc chấm phẩy (giữ nguyên chuỗi trong ngoặc kép chứa dấu phẩy như "A, C")
-        const separator = line.includes('\t') ? '\t' : (line.includes(';') ? ';' : ',');
-        if (separator === ',') {
-          const cols = [];
-          let cur = '';
-          let inQuotes = false;
-          for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (ch === '"') {
-              inQuotes = !inQuotes;
-            } else if (ch === ',' && !inQuotes) {
-              cols.push(cur.trim());
-              cur = '';
-            } else {
-              cur += ch;
-            }
+      function countUnquoted(str, ch) {
+        let count = 0;
+        let inQuotes = false;
+        for (let i = 0; i < str.length; i++) {
+          if (str[i] === '"') {
+            if (inQuotes && str[i + 1] === '"') i++;
+            else inQuotes = !inQuotes;
+          } else if (str[i] === ch && !inQuotes) {
+            count++;
           }
-          cols.push(cur.trim());
-          return cols.map(c => c.replace(/^"(.*)"$/, '$1').trim());
         }
-        return line.split(separator).map(col => col.replace(/^"(.*)"$/, '$1').trim());
+        return count;
+      }
+
+      function splitCsvRow(line, sep) {
+        const cols = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+              cur += '"';
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (ch === sep && !inQuotes) {
+            cols.push(cur.trim());
+            cur = '';
+          } else {
+            cur += ch;
+          }
+        }
+        cols.push(cur.trim());
+        return cols.map(c => c.replace(/^"(.*)"$/, '$1').trim());
+      }
+
+      const lines = csvText.split(/\r?\n/).filter(l => l.trim());
+      const headerSample = lines[0] || '';
+      const tabs = countUnquoted(headerSample, '\t');
+      const semis = countUnquoted(headerSample, ';');
+      const commas = countUnquoted(headerSample, ',');
+      const defaultSep = tabs > 0 && tabs >= semis && tabs >= commas
+        ? '\t'
+        : (semis > commas ? ';' : ',');
+
+      const rows = lines.map(line => {
+        const lTabs = countUnquoted(line, '\t');
+        const lSemis = countUnquoted(line, ';');
+        const lCommas = countUnquoted(line, ',');
+        const sep = defaultSep === ',' && lCommas > 0
+          ? ','
+          : (lTabs > 0 && lTabs >= lSemis && lTabs >= lCommas ? '\t' : (lSemis > lCommas ? ';' : defaultSep));
+        return splitCsvRow(line, sep);
       });
       return ExamImporter.parseExcelRows(rows, defaultTitle);
     },

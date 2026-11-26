@@ -157,7 +157,7 @@ test('startRoom & advanceQuestion validate states, clamp countdown [1, 60] and r
   assert.equal(rooms.startRoom(r.pin, 5).success, false); // already started
 });
 
-test('submitAnswer scoring, 2s grace window, streak cap 50, wrong reset & auto-start on qIdx=0', async () => {
+test('submitAnswer scoring, 2s grace window, streak cap 50, wrong reset & rejects waiting room', async () => {
   const clock = { now: 1_700_000_000_000 };
   const rooms = loadRooms(clock);
   const questions = Array.from({ length: 8 }, () => ({ choices: ['A', 'B'], correct: 0, points: 100, timeLimit: 10 }));
@@ -165,8 +165,12 @@ test('submitAnswer scoring, 2s grace window, streak cap 50, wrong reset & auto-s
   const p1 = rooms.addPlayer(r.pin, { id: 'p1', nick: 'An' }).player;
   const p2 = rooms.addPlayer(r.pin, { id: 'p2', nick: 'Binh' }).player;
 
-  // Waiting room: qIdx=1 rejected, qIdx=0 auto-starts
+  // Waiting room: both qIdx=1 and qIdx=0 are rejected until host starts/advances
   assert.equal(rooms.submitAnswer(r.pin, { playerId: 'p1', playerToken: p1.playerToken, qIdx: 1, choice: 0 }).rejected, true);
+  assert.equal(rooms.submitAnswer(r.pin, { playerId: 'p1', playerToken: p1.playerToken, qIdx: 0, choice: 0 }).rejected, true);
+  assert.equal(r.status, 'waiting');
+
+  rooms.advanceQuestion(r.pin, 0, 'question');
   assert.equal(rooms.submitAnswer(r.pin, { playerId: 'p1', playerToken: p1.playerToken, qIdx: 0, choice: 0 }).answerAccepted, true);
   assert.equal(r.status, 'started');
 

@@ -561,6 +561,11 @@ async function postAnswerToServer(payload, submittedQ) {
       document.getElementById('question-meta').textContent = '⏰ Đã hết thời gian trả lời câu hỏi!';
       return;
     }
+    if (res && res.rejected && currentQ === submittedQ) {
+      answered = false;
+      document.getElementById('question-meta').textContent = res.message || 'Phòng thi chưa sẵn sàng để nộp đáp án!';
+      return;
+    }
     if (res && res.unauthorized) {
       const jRes = await fetch(`/api/rooms/${encodeURIComponent(PIN)}/join`, {
         method: 'POST',

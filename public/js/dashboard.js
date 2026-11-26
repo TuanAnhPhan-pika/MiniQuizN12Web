@@ -639,6 +639,12 @@
     const msg = document.getElementById('settings-msg');
     msg.classList.remove('show', 'warning');
 
+    if (newPassword && (newPassword.trim().length < 6 || newPassword.length > 128)) {
+      msg.textContent = '❌ Mật khẩu mới phải dài 6-128 ký tự và không được chỉ gồm khoảng trắng.';
+      msg.classList.add('show');
+      return;
+    }
+
     if (newPassword && newPassword !== confirmNewPassword) {
       msg.textContent = '❌ Xác nhận mật khẩu mới không khớp';
       msg.classList.add('show');

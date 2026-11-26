@@ -88,7 +88,7 @@
     </div>
     <div class="login-form-group">
       <label class="login-form-label" for="settings-current-pass">Mật khẩu hiện tại (bắt buộc)</label>
-      <input class="login-form-input" id="settings-current-pass" type="password" autocomplete="current-password" />
+      <input class="login-form-input" id="settings-current-pass" type="password" maxlength="128" autocomplete="current-password" />
     </div>
     <div class="login-form-group">
       <label class="login-form-label" for="settings-name">Tên hiển thị mới</label>
@@ -97,11 +97,11 @@
     </div>
     <div class="login-form-group">
       <label class="login-form-label" for="settings-new-pass">Mật khẩu mới</label>
-      <input class="login-form-input" id="settings-new-pass" type="password" placeholder="Để trống nếu không đổi" autocomplete="new-password" />
+      <input class="login-form-input" id="settings-new-pass" type="password" maxlength="128" placeholder="6-128 ký tự (để trống nếu không đổi)" autocomplete="new-password" />
     </div>
     <div class="login-form-group">
       <label class="login-form-label" for="settings-confirm-pass">Xác nhận mật khẩu mới</label>
-      <input class="login-form-input" id="settings-confirm-pass" type="password" autocomplete="new-password" />
+      <input class="login-form-input" id="settings-confirm-pass" type="password" maxlength="128" autocomplete="new-password" />
       <div class="login-hint">Giới hạn 1 lần / 7 ngày</div>
     </div>
     <div class="error-msg" id="settings-msg"></div>

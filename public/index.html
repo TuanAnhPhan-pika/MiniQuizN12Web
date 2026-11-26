@@ -125,7 +125,7 @@
       </div>
       <div class="login-form-group">
         <label class="login-form-label" for="login-pass">Mật khẩu</label>
-        <input class="login-form-input" id="login-pass" type="password" placeholder="Nhập mật khẩu" autocomplete="current-password" />
+        <input class="login-form-input" id="login-pass" type="password" maxlength="128" placeholder="Nhập mật khẩu" autocomplete="current-password" />
       </div>
       <div class="error-msg" id="error-login"></div>
       <button class="btn-join" onclick="handleLogin()">Đăng nhập</button>
@@ -143,11 +143,11 @@
       </div>
       <div class="login-form-group">
         <label class="login-form-label" for="reg-pass">Mật khẩu</label>
-        <input class="login-form-input" id="reg-pass" type="password" placeholder="Ít nhất 6 ký tự" autocomplete="new-password" />
+        <input class="login-form-input" id="reg-pass" type="password" maxlength="128" placeholder="6-128 ký tự (không chỉ khoảng trắng)" autocomplete="new-password" />
       </div>
       <div class="login-form-group">
         <label class="login-form-label" for="reg-confirm">Xác nhận mật khẩu</label>
-        <input class="login-form-input" id="reg-confirm" type="password" placeholder="Nhập lại mật khẩu" autocomplete="new-password" />
+        <input class="login-form-input" id="reg-confirm" type="password" maxlength="128" placeholder="Nhập lại mật khẩu" autocomplete="new-password" />
       </div>
       <div class="error-msg" id="error-register"></div>
       <button class="btn-join" id="btn-submit-register" onclick="handleRegister()">Đăng ký</button>

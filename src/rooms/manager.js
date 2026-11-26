@@ -10,12 +10,28 @@ const MAX_ROOMS_PER_HOST = 3;
 const ANSWER_GRACE_MS = 2000; // 2 giây ân hạn trễ mạng phía server
 const activeRooms = new Map(); // pin -> room object
 
+function parseStrictInt(val) {
+  if (val === null || val === undefined || typeof val === 'boolean' || typeof val === 'object') {
+    return NaN;
+  }
+  if (typeof val === 'string' && !val.trim()) {
+    return NaN;
+  }
+  const num = Number(val);
+  return Number.isInteger(num) ? num : NaN;
+}
+
+function sanitizeAvatar(av) {
+  const clean = typeof av === 'string' ? av.trim() : '';
+  return /^[a-zA-Z0-9_-]{1,16}$/.test(clean) ? clean : '01';
+}
+
 function getCorrectChoices(question) {
-  if (!question) return [];
+  if (!question || typeof question !== 'object') return [];
   const maxLen = Array.isArray(question.choices) ? question.choices.length : 100;
   if (Array.isArray(question.correctChoices) && question.correctChoices.length > 0) {
     const uniq = Array.from(new Set(
-      question.correctChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen)
+      question.correctChoices.map(parseStrictInt).filter(n => Number.isInteger(n) && n >= 0 && n < maxLen)
     )).sort((a, b) => a - b);
     if (uniq.length > 0) return uniq;
   }
@@ -103,17 +119,27 @@ async function createRoom({ pin: requestedPin, hostUsername, exam, capacity = 40
   }
 
   const now = Date.now();
-  const roomTitle = title || exam.title || 'Phòng thi trực tuyến';
-  const questions = (exam && Array.isArray(exam.questions)) ? exam.questions : [];
+  const safeExam = (exam && typeof exam === 'object' && !Array.isArray(exam)) ? exam : {};
+  const roomTitle = title || safeExam.title || 'Phòng thi trực tuyến';
+  const questions = (Array.isArray(safeExam.questions) ? safeExam.questions : [])
+    .filter(q => q && typeof q === 'object' && !Array.isArray(q))
+    .map(q => ({
+      ...q,
+      choices: Array.isArray(q.choices) ? q.choices : [],
+    }));
   const hostToken = crypto.randomBytes(32).toString('hex');
   const sessionId = crypto.randomUUID();
+
+  const parsedCap = Number(capacity);
+  const truncCap = Number.isFinite(parsedCap) ? Math.trunc(parsedCap) : NaN;
+  const safeCapacity = truncCap >= 1 ? Math.min(truncCap, 500) : 40;
 
   const room = {
     sessionId,
     pin,
-    examId: exam.id || null,
+    examId: safeExam.id || null,
     title: roomTitle,
-    capacity: Number(capacity) || 40,
+    capacity: safeCapacity,
     isLocked: !!isLocked,
     hostUsername: String(hostUsername || 'admin').toLowerCase(),
     hostToken,
@@ -190,7 +216,7 @@ function sanitizePlayer(player, room, isHost = false) {
   return {
     id: player.id,
     nick: player.nick,
-    av: player.av || '01',
+    av: sanitizeAvatar(player.av),
     score: visiblePlayerScore(room, player, isHost).score,
     currentQ: Number(player.currentQ) || 0,
     streak: visiblePlayerScore(room, player, isHost).streak,
@@ -253,14 +279,14 @@ function getRoomForClient(pin, isHost = false) {
   }
 
   // Sanitize cho thí sinh: ẩn đáp án đúng
-  const sanitizedQuestions = (room.questions || []).map(q => {
+  const sanitizedQuestions = (room.questions || []).filter(q => q && typeof q === 'object').map(q => {
     const isMulti = isMultiChoiceQuestion(q);
     const correctList = getCorrectChoices(q);
     return {
       id: q.id,
       versionId: q.versionId,
       text: q.text,
-      choices: q.choices,
+      choices: Array.isArray(q.choices) ? q.choices : [],
       ...(isMulti ? { isMultiple: true } : {}),
       ...(room.status === 'finished' ? { explanation: q.explanation || '' } : {}),
       image: q.image || '',
@@ -313,7 +339,7 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
   if (!room) return { success: false, message: 'Phòng thi không tồn tại' };
 
   const now = Date.now();
-  const nickClean = (nick || 'Thí sinh').trim().slice(0, 25);
+  const nickClean = (typeof nick === 'string' ? nick.trim() : '').slice(0, 25) || 'Thí sinh';
   const nickLower = nickClean.toLowerCase();
 
   // 1. Reconnect case: Kiểm tra xem thí sinh đã có trong phòng chưa
@@ -329,7 +355,7 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
     }
     // Reconnect thành công: cập nhật thời gian, không overwrite ID bằng ID mới lạ
     existing.lastUpdated = now;
-    if (av) existing.av = av;
+    if (av !== undefined && av !== null && av !== '') existing.av = sanitizeAvatar(av);
     // Reconnect must preserve the account bound at the original join.
     if (existing.accountUserId && accountUserId && existing.accountUserId !== accountUserId) {
       return { success: false, message: 'Player belongs to another account.' };
@@ -363,7 +389,7 @@ function addPlayer(pin, { id, nick, av = '01', playerToken, isHost = false, acco
     id: id || `p-${now}-${Math.random().toString(36).slice(2, 6)}`,
     playerToken: newToken,
     nick: nickClean,
-    av: av || '01',
+    av: sanitizeAvatar(av),
     score: 0,
     currentQ: 0,
     streak: 0,
@@ -444,7 +470,7 @@ function advanceQuestion(pin, nextQIndex, phase = 'question') {
   if (!room) return { success: false, message: 'Phòng không tồn tại' };
   const validPhases = ['question', 'result'];
   const targetPhase = validPhases.includes(phase) ? phase : 'question';
-  const qNum = Number(nextQIndex);
+  const qNum = parseStrictInt(nextQIndex);
   const totalQuestions = (room.questions || []).length;
   if (!Number.isInteger(qNum) || qNum < 0 || (totalQuestions > 0 && qNum >= totalQuestions)) {
     return { success: false, message: 'Chỉ số câu hỏi không hợp lệ' };
@@ -480,8 +506,10 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
     return { success: false, unauthorized: true, message: 'Thí sinh không hợp lệ hoặc token không đúng!' };
   }
 
-  // 2. Tự động chuyển countdown hoặc waiting sang started khi có thí sinh nộp câu hỏi
-  if (room.status === 'countdown' || (room.status === 'waiting' && Number(qIdx) === 0)) {
+  const qIdxNum = parseStrictInt(qIdx);
+
+  // 2. Chỉ tự động chuyển countdown sang started; tuyệt đối không cho thí sinh nộp ở waiting để tự start phòng
+  if (room.status === 'countdown') {
     room.status = 'started';
     if (!room.phaseStartedAt) room.phaseStartedAt = Date.now();
     if (!room.questionStartedAt) room.questionStartedAt = Date.now();
@@ -496,11 +524,11 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
     return { success: false, rejected: true, message: 'Hiện không ở giai đoạn trả lời câu hỏi!' };
   }
 
-  if (Number(qIdx) !== Number(room.currentQ)) {
-    return { success: false, rejected: true, message: `Câu hỏi ${qIdx + 1} không khớp với câu đang mở (${room.currentQ + 1})!` };
+  if (!Number.isInteger(qIdxNum) || qIdxNum !== Number(room.currentQ)) {
+    return { success: false, rejected: true, message: `Câu hỏi ${Number(qIdx) + 1} không khớp với câu đang mở (${room.currentQ + 1})!` };
   }
 
-  const question = (room.questions && room.questions[qIdx]) || null;
+  const question = (room.questions && room.questions[qIdxNum]) || null;
   if (!question || !Array.isArray(question.choices)) {
     return { success: false, message: 'Dữ liệu câu hỏi không hợp lệ!' };
   }
@@ -512,13 +540,13 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
     if (choices.length === 0) {
       return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
     }
-    const parsed = choices.map(Number);
+    const parsed = choices.map(parseStrictInt);
     if (parsed.some(c => !Number.isInteger(c) || c < 0 || c >= question.choices.length)) {
       return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
     }
     userChoices = Array.from(new Set(parsed)).sort((a, b) => a - b);
   } else {
-    const choiceNum = Number(choice);
+    const choiceNum = parseStrictInt(choice);
     if (!Number.isInteger(choiceNum) || choiceNum < 0 || choiceNum >= question.choices.length) {
       return { success: false, invalidChoice: true, message: 'Lựa chọn đáp án nằm ngoài phạm vi câu hỏi!' };
     }
@@ -527,9 +555,9 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
 
   // 4. Chống nộp trùng lặp (Anti-duplicate submission)
   room.answers = room.answers || {};
-  room.answers[qIdx] = room.answers[qIdx] || {};
+  room.answers[qIdxNum] = room.answers[qIdxNum] || {};
 
-  if (room.answers[qIdx][player.id]) {
+  if (room.answers[qIdxNum][player.id]) {
     return { success: false, duplicate: true, message: 'Bạn đã nộp đáp án cho câu này rồi!' };
   }
 
@@ -581,7 +609,7 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
     scoreAwarded = 0;
   }
 
-  player.currentQ = qIdx;
+  player.currentQ = qIdxNum;
   player.lastUpdated = now;
 
   const primaryChoice = userChoices[0] ?? -1;
@@ -599,11 +627,11 @@ function submitAnswer(pin, { playerId, playerToken, qIdx, choice, choices }) {
     answeredAt: now,
   };
 
-  room.answers[qIdx][player.id] = record;
+  room.answers[qIdxNum][player.id] = record;
 
   return {
     success: true,
-    qIdx,
+    qIdx: qIdxNum,
     choice: primaryChoice,
     ...(isMulti ? { choices: userChoices } : {}),
     answerAccepted: true,
@@ -623,7 +651,7 @@ function updatePlayerMetadata(pin, { playerId, playerToken, av }) {
     return { success: false, unauthorized: true, message: 'Không thể xác thực thí sinh' };
   }
 
-  if (av) player.av = av;
+  if (av !== undefined && av !== null && av !== '') player.av = sanitizeAvatar(av);
   player.lastUpdated = Date.now();
 
   return {
@@ -631,7 +659,7 @@ function updatePlayerMetadata(pin, { playerId, playerToken, av }) {
     player: {
       id: player.id,
       nick: player.nick,
-      av: player.av,
+      av: sanitizeAvatar(player.av),
       ...(room.phase !== 'question' || room.status === 'finished' ? { score: player.score } : {}),
     },
     leaderboard: getLeaderboard(pin)
@@ -647,7 +675,7 @@ function getLeaderboard(pin, isHost = false) {
     .map(p => ({
       id: p.id,
       nick: p.nick,
-      av: p.av || '01',
+      av: sanitizeAvatar(p.av),
       score: visiblePlayerScore(room, p, isHost).score,
       currentQ: Number(p.currentQ) || 0,
       streak: visiblePlayerScore(room, p, isHost).streak,
@@ -709,7 +737,7 @@ function calculateExamStats(room) {
     return {
       id: c.id,
       nick: c.nick,
-      av: c.av || '01',
+      av: sanitizeAvatar(c.av),
       score: Number(c.score) || 0,
       answersMap,
       correctCount,

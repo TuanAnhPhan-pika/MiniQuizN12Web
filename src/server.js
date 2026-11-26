@@ -50,9 +50,10 @@ function sortExamsByCode(exams) {
 }
 
 function canonicalizeQuestion(q) {
-  if (!q) return '';
+  if (!q || typeof q !== 'object') return '';
   const text = String(q.text || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  const choices = (q.choices || []).map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' '));
+  const rawChoices = Array.isArray(q.choices) ? q.choices : [];
+  const choices = rawChoices.map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' '));
   const correctList = Array.isArray(q.correctChoices) && q.correctChoices.length > 0
     ? [...q.correctChoices].sort((a, b) => a - b)
     : (typeof q.correct === 'number' ? [q.correct] : []);
@@ -62,9 +63,10 @@ function canonicalizeQuestion(q) {
 }
 
 function getCanonicalExamString(exam) {
-  if (!exam) return '';
+  if (!exam || typeof exam !== 'object') return '';
   const title = String(exam.title || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  const canonicalQuestions = (exam.questions || []).map(canonicalizeQuestion).sort();
+  const rawQuestions = Array.isArray(exam.questions) ? exam.questions : [];
+  const canonicalQuestions = rawQuestions.map(canonicalizeQuestion).sort();
   return `title:${title}\nquestions:\n${canonicalQuestions.join('\n')}`;
 }
 
@@ -146,7 +148,15 @@ function readJsonBody(req) {
       settled = true;
       try {
         const raw = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : '';
-        resolve(raw ? JSON.parse(raw) : {});
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          const typeErr = new Error('Dữ liệu JSON phải là một đối tượng hợp lệ.');
+          typeErr.status = 400;
+          typeErr.code = 'INVALID_JSON';
+          reject(typeErr);
+          return;
+        }
+        resolve(parsed);
       } catch (_err) {
         const parseErr = new Error('Dữ liệu JSON không hợp lệ.');
         parseErr.status = 400;
@@ -191,13 +201,22 @@ function getClientIp(req) {
 function getRequestProto(req) {
   const forwardedProto = req.headers['x-forwarded-proto'];
   if (forwardedProto && typeof forwardedProto === 'string') {
-    return forwardedProto.split(',')[0].trim().toLowerCase();
+    const candidate = forwardedProto.split(',')[0].trim().toLowerCase();
+    if (candidate === 'https' || candidate === 'http') return candidate;
   }
   return 'http';
 }
 
 function getRequestHost(req) {
-  return req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
+  const rawHost = req.headers['x-forwarded-host'] || req.headers.host || '';
+  const candidate = String(rawHost).split(',')[0].trim();
+  if (candidate && /^[a-zA-Z0-9.\-:[\]]+$/.test(candidate)) {
+    try {
+      const check = new URL(`http://${candidate}`);
+      if (check.host === candidate.toLowerCase() || check.hostname) return candidate;
+    } catch (_) {}
+  }
+  return `localhost:${PORT}`;
 }
 
 // Lấy user đang đăng nhập từ token header hoặc cookie session; null nếu không hợp lệ
@@ -289,10 +308,14 @@ function sendJSON(res, status, obj, extraHeaders) {
 
 function sendRequestError(res, err) {
   if (!res || res.writableEnded || res.destroyed) return;
-  const status = (err && (err.status === 400 || err.status === 408 || err.status === 413)) ? err.status : 500;
+  const isUriErr = err instanceof URIError;
+  const status = isUriErr
+    ? 400
+    : ((err && (err.status === 400 || err.status === 403 || err.status === 408 || err.status === 413)) ? err.status : 500);
   const headers = status === 413 ? { Connection: 'close' } : undefined;
+  const message = isUriErr ? 'Đường dẫn URL không hợp lệ.' : (err?.message || 'Lỗi máy chủ nội bộ.');
   if (!res.headersSent) {
-    sendJSON(res, status, { success: false, message: err?.message || 'Lỗi máy chủ nội bộ.' }, headers);
+    sendJSON(res, status, { success: false, message }, headers);
     if (status === 413 && res.socket && !res.socket.destroyed) {
       res.once('finish', () => { try { res.socket.destroy(); } catch {} });
     }
@@ -320,7 +343,13 @@ async function handleHttpRequest(req, res) {
   const proto = getRequestProto(req);
   const host = getRequestHost(req);
   const isSecure = proto === 'https';
-  const parsedUrl = new URL(req.url, `${proto}://${host}`);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(req.url, `${proto}://${host}`);
+  } catch (_urlErr) {
+    sendJSON(res, 400, { success: false, message: 'Đường dẫn URL không hợp lệ.' });
+    return;
+  }
   const pathname = parsedUrl.pathname;
   const method = req.method.toUpperCase();
 
@@ -589,21 +618,31 @@ async function handleHttpRequest(req, res) {
       const patch = {};
       const now = Date.now();
 
-      if (newDisplayName !== undefined && newDisplayName !== null && newDisplayName.trim() !== user.displayName) {
-        const nameErr = auth.validateDisplayName(newDisplayName);
-        if (nameErr) { sendJSON(res, 400, { success: false, message: nameErr }); return; }
-        const nameCd = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
-        if (!nameCd.allowed) {
-          const daysLeft = Math.ceil((nameCd.nextAllowedAt - now) / (24 * 60 * 60 * 1000));
-          sendJSON(res, 429, { success: false, message: `Bạn chỉ có thể đổi tên hiển thị 1 lần mỗi 7 ngày. Vui lòng quay lại sau ${daysLeft} ngày.` });
+      if (newDisplayName !== undefined && newDisplayName !== null) {
+        if (typeof newDisplayName !== 'string') {
+          sendJSON(res, 400, { success: false, message: auth.validateDisplayName('') });
           return;
         }
-        patch.displayName = newDisplayName.trim();
-        patch.lastNameChangeAt = now;
+        if (newDisplayName.trim() !== user.displayName) {
+          const nameErr = auth.validateDisplayName(newDisplayName);
+          if (nameErr) { sendJSON(res, 400, { success: false, message: nameErr }); return; }
+          const nameCd = auth.cooldownInfo(user.lastNameChangeAt, auth.NAME_CHANGE_COOLDOWN_MS);
+          if (!nameCd.allowed) {
+            const daysLeft = Math.ceil((nameCd.nextAllowedAt - now) / (24 * 60 * 60 * 1000));
+            sendJSON(res, 429, { success: false, message: `Bạn chỉ có thể đổi tên hiển thị 1 lần mỗi 7 ngày. Vui lòng quay lại sau ${daysLeft} ngày.` });
+            return;
+          }
+          patch.displayName = newDisplayName.trim();
+          patch.lastNameChangeAt = now;
+        }
       }
 
-      if (newPassword) {
-        if (!currentPassword) {
+      if (newPassword !== undefined && newPassword !== null && newPassword !== '') {
+        if (typeof newPassword !== 'string') {
+          sendJSON(res, 400, { success: false, message: auth.validatePassword('') });
+          return;
+        }
+        if (!currentPassword || typeof currentPassword !== 'string') {
           sendJSON(res, 400, { success: false, message: 'Vui lòng nhập mật khẩu hiện tại để đổi mật khẩu.' });
           return;
         }
@@ -812,7 +851,7 @@ async function handleHttpRequest(req, res) {
           );
           if (sessRes.rows.length > 0) {
             const sess = sessRes.rows[0];
-            const stats = sess.stats || {};
+            const stats = typeof sess.stats === 'string' ? JSON.parse(sess.stats) : (sess.stats || {});
             const matrix = stats.candidatesMatrix || [];
             const cand = matrix.find(c => c.id === (body.playerId || body.id) || (body.nick && c.nick === body.nick));
             if (cand || sessionUser) {
@@ -889,7 +928,8 @@ async function handleHttpRequest(req, res) {
             const rawChoices = Array.isArray(ans.userChoices)
               ? ans.userChoices
               : (typeof ans.userChoice === 'number' && ans.userChoice >= 0 ? [ans.userChoice] : (typeof ans.choice === 'number' && ans.choice >= 0 ? [ans.choice] : []));
-            const userChoices = Array.from(new Set(rawChoices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < (q.choices || []).length))).sort((a, b) => a - b);
+            const toChoiceInt = v => (v === null || v === undefined || typeof v === 'boolean' || typeof v === 'object' || (typeof v === 'string' && !v.trim())) ? NaN : Number(v);
+            const userChoices = Array.from(new Set(rawChoices.map(toChoiceInt).filter(n => Number.isInteger(n) && n >= 0 && n < (q.choices || []).length))).sort((a, b) => a - b);
             const userChoice = userChoices.length > 0 ? userChoices[0] : -1;
             const isCorrect = isMulti
               ? (correctChoices.length > 0 && userChoices.length === correctChoices.length && userChoices.every((v, idx) => v === correctChoices[idx]))
@@ -977,6 +1017,8 @@ async function handleHttpRequest(req, res) {
         });
 
         const ratioPct = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+        const hasExplicitCorrectCount = body.correctCount !== undefined && body.correctCount !== null && body.correctCount !== '' && Number.isFinite(Number(body.correctCount));
+        const hasExplicitAccuracy = body.accuracyPct !== undefined && body.accuracyPct !== null && body.accuracyPct !== '' && Number.isFinite(Number(body.accuracyPct));
         authoritativeRecord = {
           id: `attempt-practice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           username,
@@ -987,11 +1029,11 @@ async function handleHttpRequest(req, res) {
           examTitle: body.roomTitle || 'Bài làm luyện tập',
           score: Number(body.score) || calculatedScore,
           maxScore: Number(body.maxScore) || (totalQuestions * 100),
-          correctCount: Number(body.correctCount) !== undefined ? Number(body.correctCount) : correctCount,
+          correctCount: hasExplicitCorrectCount ? Number(body.correctCount) : correctCount,
           wrongCount: totalQuestions - correctCount,
           totalQuestions,
-          ratioPct: Number(body.accuracyPct) !== undefined ? Number(body.accuracyPct) : ratioPct,
-          accuracyPct: Number(body.accuracyPct) !== undefined ? Number(body.accuracyPct) : ratioPct,
+          ratioPct: hasExplicitAccuracy ? Number(body.accuracyPct) : ratioPct,
+          accuracyPct: hasExplicitAccuracy ? Number(body.accuracyPct) : ratioPct,
           rank: Number(body.rank) || 1,
           totalPlayers: Number(body.totalPlayers) || 1,
           formattedTime: new Date().toLocaleString('vi-VN'),
@@ -1099,9 +1141,17 @@ async function handleHttpRequest(req, res) {
     }
     try {
       const rawBody = await readJsonBody(req);
-      const examData = (rawBody && rawBody.exam) ? rawBody.exam : rawBody;
-      if (!examData || !examData.title) {
-        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
+      const examData = (rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) && rawBody.exam) ? rawBody.exam : rawBody;
+      if (
+        !examData ||
+        typeof examData !== 'object' ||
+        Array.isArray(examData) ||
+        typeof examData.title !== 'string' ||
+        !examData.title.trim() ||
+        !Array.isArray(examData.questions) ||
+        examData.questions.length === 0
+      ) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ! Đề thi cần có tiêu đề và ít nhất 1 câu hỏi.' });
         return;
       }
       const saved = await db.saveQuiz(examData, sessionUser.username, false);
@@ -1120,7 +1170,7 @@ async function handleHttpRequest(req, res) {
       sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
       return;
     }
-    const examId = pathname.replace('/api/storage/private/', '');
+    const examId = decodeURIComponent(pathname.replace('/api/storage/private/', ''));
     try {
       const deleted = await db.deleteQuiz(examId, sessionUser.username);
       sendJSON(res, 200, { success: deleted });
@@ -1204,9 +1254,17 @@ async function handleHttpRequest(req, res) {
     }
     try {
       const body = await readJsonBody(req);
-      const incomingExam = body.exam || body;
-      if (!incomingExam || !incomingExam.title) {
-        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
+      const incomingExam = (body && typeof body === 'object' && !Array.isArray(body) && body.exam) ? body.exam : body;
+      if (
+        !incomingExam ||
+        typeof incomingExam !== 'object' ||
+        Array.isArray(incomingExam) ||
+        typeof incomingExam.title !== 'string' ||
+        !incomingExam.title.trim() ||
+        !Array.isArray(incomingExam.questions) ||
+        incomingExam.questions.length === 0
+      ) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ! Đề thi cần có tiêu đề và ít nhất 1 câu hỏi.' });
         return;
       }
       const check = await evaluateCopySimilarity(incomingExam, sessionUser);
@@ -1227,9 +1285,17 @@ async function handleHttpRequest(req, res) {
     }
     try {
       const body = await readJsonBody(req);
-      const incomingExam = body.exam || body;
-      if (!incomingExam || !incomingExam.title) {
-        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ!' });
+      const incomingExam = (body && typeof body === 'object' && !Array.isArray(body) && body.exam) ? body.exam : body;
+      if (
+        !incomingExam ||
+        typeof incomingExam !== 'object' ||
+        Array.isArray(incomingExam) ||
+        typeof incomingExam.title !== 'string' ||
+        !incomingExam.title.trim() ||
+        !Array.isArray(incomingExam.questions) ||
+        incomingExam.questions.length === 0
+      ) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi không hợp lệ! Đề thi cần có tiêu đề và ít nhất 1 câu hỏi.' });
         return;
       }
 
@@ -1250,7 +1316,9 @@ async function handleHttpRequest(req, res) {
       const publicExams = await db.getPublicQuizzes();
 
       // Đề mới hoặc bản sao đã chỉnh sửa đạt ngưỡng 10%
-      let baseCode = incomingExam.code ? incomingExam.code.replace(/^#/, '') : Math.random().toString(16).slice(2, 6);
+      const rawCodeStr = typeof incomingExam.code === 'string' ? incomingExam.code.trim() : '';
+      let baseCode = rawCodeStr ? rawCodeStr.replace(/^#/, '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) : '';
+      if (!baseCode) baseCode = Math.random().toString(16).slice(2, 6);
       let newCode = `#${baseCode}`;
       if (publicExams.some(e => e.code === newCode)) {
         newCode = `#${baseCode}-${Date.now().toString().slice(-4)}`;
@@ -1289,7 +1357,7 @@ async function handleHttpRequest(req, res) {
       sendJSON(res, 401, { success: false, message: 'Chưa đăng nhập.' });
       return;
     }
-    const examId = pathname.replace('/api/storage/public/', '');
+    const examId = decodeURIComponent(pathname.replace('/api/storage/public/', ''));
     try {
       const deleted = await db.deleteQuiz(examId, sessionUser);
       if (!deleted) {
@@ -1389,6 +1457,33 @@ async function handleHttpRequest(req, res) {
         sendJSON(res, 400, { success: false, message: 'Tên phòng thi không được để trống!' });
         return;
       }
+      if (
+        (body.questions !== undefined && !Array.isArray(body.questions)) ||
+        (body.exam !== undefined && body.exam !== null && (
+          typeof body.exam !== 'object' ||
+          Array.isArray(body.exam) ||
+          (body.exam.questions !== undefined && !Array.isArray(body.exam.questions))
+        ))
+      ) {
+        sendJSON(res, 400, { success: false, message: 'Dữ liệu đề thi của phòng không hợp lệ!' });
+        return;
+      }
+
+      let validatedCapacity = 40;
+      const rawCap = body.capacity;
+      const isCapOmitted = rawCap === undefined || rawCap === null || (typeof rawCap === 'string' && !rawCap.trim());
+      if (!isCapOmitted) {
+        if (typeof rawCap === 'boolean' || typeof rawCap === 'object') {
+          sendJSON(res, 400, { success: false, message: 'Số lượng thành viên phải là số nguyên từ 1 đến 500!' });
+          return;
+        }
+        const parsedCap = Number(rawCap);
+        if (!Number.isInteger(parsedCap) || parsedCap < 1 || parsedCap > 500) {
+          sendJSON(res, 400, { success: false, message: 'Số lượng thành viên phải là số nguyên từ 1 đến 500!' });
+          return;
+        }
+        validatedCapacity = parsedCap;
+      }
 
       const createdPayload = await withHostRoomCreateLock(hostUsername, async () => {
         const cleanReqPin = body.pin && /^\d{3}-\d{3}$/.test(String(body.pin).trim())
@@ -1433,7 +1528,7 @@ async function handleHttpRequest(req, res) {
           pin: body.pin,
           hostUsername,
           exam,
-          capacity: Number(body.capacity) || 40,
+          capacity: validatedCapacity,
           isLocked: !!body.isLocked,
           title: roomTitle
         });
@@ -1518,9 +1613,10 @@ async function handleHttpRequest(req, res) {
         };
       }
       const question = rawRoom.questions[qIdx];
+      const choicesArr = Array.isArray(question?.choices) ? question.choices : [];
       const isMulti = roomsManager.isMultiChoiceQuestion(question);
       const correctChoices = roomsManager.getCorrectChoices(question);
-      const distribution = new Array(question.choices.length).fill(0);
+      const distribution = new Array(choicesArr.length).fill(0);
       for (const answer of Object.values(rawRoom.answers[qIdx] || {})) {
         const picked = Array.isArray(answer.choices) ? answer.choices : (Number.isInteger(answer.choice) ? [answer.choice] : []);
         for (const c of picked) {
@@ -1528,8 +1624,8 @@ async function handleHttpRequest(req, res) {
         }
       }
       const correctText = isMulti
-        ? correctChoices.map(idx => question.choices[idx] || '').filter(Boolean).join(', ')
-        : (question.choices[question.correct] || '');
+        ? correctChoices.map(idx => choicesArr[idx] || '').filter(Boolean).join(', ')
+        : (choicesArr[question.correct] || '');
       sendJSON(res, 200, {
         success: true, qIdx, correctChoice: correctChoices[0] ?? question.correct,
         ...(isMulti ? { isMultiple: true, correctChoices } : {}),
@@ -1669,7 +1765,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/leave')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/leave$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const body = await readJsonBody(req);
     const sessionUser = getSessionUser(req);
     const rawRoom = roomsManager.getRawRoom(pin);
@@ -1691,7 +1787,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/kick')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/kick$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const hostCheck = requireRoomHost(req, pin);
     if (!hostCheck.ok) {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
@@ -1743,7 +1839,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/advance')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/advance$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const hostCheck = requireRoomHost(req, pin);
     if (!hostCheck.ok) {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
@@ -1763,14 +1859,22 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/answer')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/answer$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const body = await readJsonBody(req);
+    const rawRoom = roomsManager.getRawRoom(pin);
+    if (rawRoom && rawRoom.status === 'waiting') {
+      sendJSON(res, 200, { success: false, rejected: true, message: 'Phòng thi chưa bắt đầu hoặc đã kết thúc!' });
+      return;
+    }
+    const isBlankScalar = v => v === null || v === undefined || typeof v === 'boolean' || Array.isArray(v) || (typeof v === 'string' && !v.trim());
+    const parsedQIdx = body.qIdx === undefined ? 0 : (isBlankScalar(body.qIdx) ? NaN : Number(body.qIdx));
+    const parsedChoice = isBlankScalar(body.choice) ? NaN : Number(body.choice);
     const result = roomsManager.submitAnswer(pin, {
       playerId: body.id || body.playerId,
       playerToken: body.playerToken || req.headers['x-player-token'],
       nick: body.nick,
-      qIdx: Number(body.qIdx) || 0,
-      choice: Number(body.choice),
+      qIdx: parsedQIdx,
+      choice: parsedChoice,
       choices: Array.isArray(body.choices) ? body.choices : undefined,
       responseTimeMs: Number(body.responseTimeMs) || 0
     });
@@ -1782,7 +1886,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/score')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/score$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const body = await readJsonBody(req);
     const result = roomsManager.updatePlayerMetadata(pin, {
       playerId: body.id || body.playerId,
@@ -1797,7 +1901,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/lock')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/lock$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const hostCheck = requireRoomHost(req, pin);
     if (!hostCheck.ok) {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
@@ -1814,7 +1918,7 @@ async function handleHttpRequest(req, res) {
   if (method === 'POST' && pathname.includes('/start')) {
     const match = pathname.match(/^\/api\/rooms\/([^/]+)\/start$/);
     if (!match) { sendJSON(res, 400, { success: false, message: 'Đường dẫn không hợp lệ' }); return; }
-    const pin = match[1];
+    const pin = decodeURIComponent(match[1]);
     const hostCheck = requireRoomHost(req, pin);
     if (!hostCheck.ok) {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
@@ -1832,7 +1936,7 @@ async function handleHttpRequest(req, res) {
 
   // [DELETE] /api/rooms/:pin - Kết thúc và lưu trữ phòng thi vào PostgreSQL (Chỉ Host authenticated)
   if (method === 'DELETE' && pathname.startsWith('/api/rooms/')) {
-    const pin = pathname.replace('/api/rooms/', '');
+    const pin = decodeURIComponent(pathname.replace('/api/rooms/', ''));
     const hostCheck = requireRoomHost(req, pin);
     if (!hostCheck.ok) {
       sendJSON(res, hostCheck.status, { success: false, message: hostCheck.message });
@@ -2168,10 +2272,18 @@ async function handleHttpRequest(req, res) {
     return;
   }
 
-  const safePath = path.normalize(pathname === '/' ? '/index.html' : pathname).replace(/^(\.\.[\/\\])+/, '');
+  let decodedPathname = pathname;
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch (uriErr) {
+    sendRequestError(res, uriErr);
+    return;
+  }
+  const safePath = path.normalize(decodedPathname === '/' ? '/index.html' : decodedPathname).replace(/^(\.\.[\/\\])+/, '');
   const fp = path.join(STATIC_DIR, safePath);
+  const relStatic = path.relative(STATIC_DIR, fp);
 
-  if (!fp.startsWith(STATIC_DIR) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) {
+  if (!relStatic || relStatic.startsWith('..') || path.isAbsolute(relStatic) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) {
     res.writeHead(404, { 'Content-Type': 'text/plain;charset=utf-8' });
     res.end('Not found');
     return;
@@ -2183,6 +2295,7 @@ async function handleHttpRequest(req, res) {
       let content = fs.readFileSync(fp, 'utf8');
       const lanIp = getServerLanIp();
       const publicUrl = process.env.APP_URL || (host ? `${proto}://${host}` : DEFAULT_APP_URL);
+      const safeJsStr = v => JSON.stringify(String(v)).replace(/</g, '\\u003c');
       const injectScript = `<script>
 (function() {
   try {
@@ -2202,9 +2315,9 @@ async function handleHttpRequest(req, res) {
     }
   }, true);
 })();
-window.__SERVER_LAN_URL__ = "http://${lanIp}:${PORT}";
-window.__SERVER_LAN_IP__ = "${lanIp}";
-window.__SERVER_PUBLIC_URL__ = "${publicUrl}";
+window.__SERVER_LAN_URL__ = ${safeJsStr(`http://${lanIp}:${PORT}`)};
+window.__SERVER_LAN_IP__ = ${safeJsStr(lanIp)};
+window.__SERVER_PUBLIC_URL__ = ${safeJsStr(publicUrl)};
 </script>`;
       if (content.includes('<head>')) {
         content = content.replace('<head>', `<head>\n  ${injectScript}`);

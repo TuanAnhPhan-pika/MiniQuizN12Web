@@ -174,7 +174,7 @@ test('TC-20 [Unit][Chuyển trạng thái] Khóa phòng chặn thí sinh mới v
   assert.equal(blocked.locked, true, 'Phòng đang khóa phải trả cờ locked: true');
 });
 
-test('TC-21 [Unit][Đoán lỗi] createRoom không được lưu sức chứa âm (capacity = -5)', async () => {
+test('TC-21 [Unit][Đoán lỗi] createRoom chuẩn hóa sức chứa âm/vượt 500 và submitAnswer chặn phòng đang waiting ở tầng lõi', async () => {
   const rm = createPureRoomManager();
   const room = await rm.createRoom({
     hostUsername: 'host_neg',
@@ -187,4 +187,12 @@ test('TC-21 [Unit][Đoán lỗi] createRoom không được lưu sức chứa â
     room.capacity >= 1,
     `BUG-04: createRoom chấp nhận và lưu capacity âm (${room.capacity}) thay vì từ chối hoặc chuẩn hóa >= 1`
   );
+  const capped = await rm.createRoom({ hostUsername: 'host_cap', exam: SAMPLE_EXAM, capacity: 999, title: 'Phòng vượt ngưỡng' });
+  assert.equal(capped.capacity, 500, 'Sức chứa vượt 500 ở tầng lõi phải được giới hạn ở 500');
+
+  const p = rm.addPlayer(room.pin, { nick: 'Waiter' }).player;
+  const early = rm.submitAnswer(room.pin, { playerId: p.id, playerToken: p.playerToken, qIdx: 0, choice: 1 });
+  assert.equal(early.success, false);
+  assert.equal(early.rejected, true);
+  assert.equal(rm.getRawRoom(room.pin).status, 'waiting', 'Gọi thẳng submitAnswer khi phòng waiting không được tự start phòng');
 });
